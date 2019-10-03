@@ -34,6 +34,7 @@
     `component.outputs['output_name']` (previously, the syntax was
     `component.outputs.output_name`).
 *   Updated Iris example to skip transform and use Keras model.
+*   Updated trainer executor to pass through custom config to user module.
 
 ### Deprecations
 
