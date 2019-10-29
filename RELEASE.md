@@ -7,6 +7,7 @@
 *   Added a custom Executor of Pusher to push model to BigQuery ML for serving.
 
 ## Bug fixes and other changes
+*   Code clean up for the CMLE serving custom executor
 
 *   CSVExampleGen: started using the CSV decoding utilities in `tfx-bsl`
     (`tfx-bsl>=0.15.2`)
