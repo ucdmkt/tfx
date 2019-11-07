@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Package Setup script for HelloComponent."""
+"""Package Setup script for tuner component."""
 
 from __future__ import print_function
 
@@ -20,8 +20,16 @@ from setuptools import find_packages
 from setuptools import setup
 
 
+def _make_required_install_packages():
+  # Make sure to sync the versions of common dependencies (absl-py, numpy,
+  # six, and protobuf) with TF.
+  return [
+      'tfx>=0.15,<=0.16.0dev',
+      'keras-tuner>=1.0,<2.0',
+  ]
+
 # Get version from version module.
-with open('hello_component/version.py') as fp:
+with open('version.py') as fp:
   globals_dict = {}
   exec(fp.read(), globals_dict)  # pylint: disable=exec-used
 __version__ = globals_dict['__version__']
@@ -31,7 +39,7 @@ with open('README.md') as fp:
   _LONG_DESCRIPTION = fp.read()
 
 setup(
-    name='tfx_hello_component',
+    name='tfx_tuner',
     version=__version__,
     author='Google LLC',
     author_email='tensorflow-extended-dev@googlegroups.com',
@@ -47,8 +55,8 @@ setup(
         'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7',
         'Topic :: Scientific/Engineering',
         'Topic :: Scientific/Engineering :: Artificial Intelligence',
         'Topic :: Scientific/Engineering :: Mathematics',
@@ -57,12 +65,12 @@ setup(
         'Topic :: Software Development :: Libraries :: Python Modules',
     ],
     namespace_packages=[],
-    install_requires=['tfx>=0.15.0,<0.16.0dev'],
+    install_requires=_make_required_install_packages(),
     python_requires='>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,<4',
     packages=find_packages(),
     include_package_data=True,
-    description='Hello World TFX component',
+    description='TFX Tuner',
     long_description=_LONG_DESCRIPTION,
     long_description_content_type='text/markdown',
-    keywords='tfx hello world',
+    keywords='tfx tuner',
     requires=[])
