@@ -7,6 +7,10 @@ aware of, including the choice of a modeling API.
 [ExampleGen](examplegen.md)
 * Emits: Trained model in SavedModel format
 
+Note: At this time, TFX supports TensorFlow 1.x. See
+[the TFX Roadmap](https://github.com/tensorflow/tfx/blob/master/ROADMAP.md) for
+details on TensorFlow 2.x support.
+
 Caution: Developers are strongly encouraged to use the Estimator API at this
 time.  In a later release we expect Keras to be much better supported than it
 currently is.
