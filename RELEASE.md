@@ -14,6 +14,7 @@
 *   Performance improvements for the Transform Component (for its statistics
     generation).
 *   Depended on `pyarrow>=0.14,<0.15`.
+*   Allow users to specify the region to use when serving with for AI Platform.
 
 ### Deprecations
 
