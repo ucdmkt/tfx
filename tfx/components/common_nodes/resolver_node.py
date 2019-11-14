@@ -31,6 +31,9 @@ from tfx.utils import json_utils
 RESOLVER_CLASS = 'resolver_class'
 # Constant to access resolver config from resolver exec_properties.
 RESOLVER_CONFIGS = 'source_uri'
+# Constant to access boolean indicator of whether to allow incomplete result
+# from resolver exec_properties.
+ALLOW_INCOMPLETE_RESULT = 'allow_incomplete_result'
 
 
 class ResolverDriver(base_driver.BaseDriver):
@@ -58,7 +61,8 @@ class ResolverDriver(base_driver.BaseDriver):
     resolve_result = resolver.resolve(
         metadata_handler=self._metadata_handler,
         source_channels=input_dict.copy())
-    if not resolve_result.has_complete_result:
+    if not resolve_result.has_complete_result and not exec_properties[
+        ALLOW_INCOMPLETE_RESULT]:
       raise RuntimeError('Cannot resolve all artifacts as needed.')
 
     return data_types.ExecutionDecision(
@@ -109,21 +113,30 @@ class ResolverNode(base_node.BaseNode):
                instance_name: Text,
                resolver_class: Type[base_resolver.BaseResolver],
                resolver_configs: Dict[Text, json_utils.JsonableType] = None,
+               allow_incomplete_result: bool = False,
                **kwargs: types.Channel):
     """Init function for ResolverNode.
 
     Args:
       instance_name: the name of the ResolverNode instance.
       resolver_class: the URI to the resource that needs to be registered.
-      resolver_configs: a dict of key to JsonableType representing configs that
+      resolver_configs: a dict of key to Jsonable type representing configs that
         will be used to construct the resolver.
+      allow_incomplete_result: a boolean value indicating whether to allow
+        incomplete result. If set to False, ResolverNode will error out when
+        result is not complete. Default to False.
       **kwargs: a key -> Channel dict, describing what are the Channels to be
         resolved. This is set by user through keyword args.
     """
     self._resolver_class = resolver_class
     self._resolver_configs = resolver_configs or {}
+    self._allow_incomplete_result = allow_incomplete_result
     self._input_dict = kwargs
-    self._output_dict = kwargs.copy()
+    self._output_dict = {}
+    for k, c in self._input_dict.items():
+      self._output_dict[k] = types.Channel(
+          type_name=c.type_name,
+          artifacts=[types.Artifact(type_name=c.type_name)])
     super(ResolverNode, self).__init__(instance_name=instance_name)
 
   @property
@@ -138,5 +151,6 @@ class ResolverNode(base_node.BaseNode):
   def exec_properties(self) -> Dict[Text, Any]:
     return {
         RESOLVER_CLASS: self._resolver_class,
-        RESOLVER_CONFIGS: self._resolver_configs
+        RESOLVER_CONFIGS: self._resolver_configs,
+        ALLOW_INCOMPLETE_RESULT: self._allow_incomplete_result
     }

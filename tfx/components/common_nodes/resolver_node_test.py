@@ -30,7 +30,7 @@ from tfx.types import standard_artifacts
 
 class ResolverNodeTest(tf.test.TestCase):
 
-  def testImporterDefinition(self):
+  def testResolverDefinition(self):
     channel_to_resolve = types.Channel(type=standard_artifacts.Examples)
     rnode = resolver_node.ResolverNode(
         instance_name='my_resolver',
@@ -41,7 +41,11 @@ class ResolverNodeTest(tf.test.TestCase):
         rnode.exec_properties, {
             resolver_node.RESOLVER_CLASS:
                 latest_artifacts_resolver.LatestArtifactsResolver,
-            resolver_node.RESOLVER_CONFIGS: {'desired_num_of_artifacts': 5}
+            resolver_node.RESOLVER_CONFIGS: {
+                'desired_num_of_artifacts': 5
+            },
+            resolver_node.ALLOW_INCOMPLETE_RESULT:
+                False
         })
     self.assertEqual(rnode.inputs.get_all()['channel_to_resolve'],
                      channel_to_resolve)
@@ -107,8 +111,32 @@ class ResolverDriverTest(tf.test.TestCase):
             exec_properties={
                 resolver_node.RESOLVER_CLASS:
                     latest_artifacts_resolver.LatestArtifactsResolver,
-                resolver_node.RESOLVER_CONFIGS: {}
+                resolver_node.RESOLVER_CONFIGS: {
+                    'desired_num_of_artifacts': 1
+                },
+                resolver_node.ALLOW_INCOMPLETE_RESULT:
+                    False
             })
+
+  def testResolveArtifactAllowIncompleteResult(self):
+    with metadata.Metadata(connection_config=self.connection_config) as m:
+      driver = resolver_node.ResolverDriver(metadata_handler=m)
+      execution_result = driver.pre_execution(
+          component_info=self.component_info,
+          pipeline_info=self.pipeline_info,
+          driver_args=self.driver_args,
+          input_dict=self.source_channels,
+          output_dict=self.source_channels.copy(),
+          exec_properties={
+              resolver_node.RESOLVER_CLASS:
+                  latest_artifacts_resolver.LatestArtifactsResolver,
+              resolver_node.RESOLVER_CONFIGS: {
+                  'desired_num_of_artifacts': 1
+              },
+              resolver_node.ALLOW_INCOMPLETE_RESULT:
+                  True
+          })
+      self.assertEmpty(execution_result.output_dict[self.source_channel_key])
 
 
 if __name__ == '__main__':
