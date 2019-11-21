@@ -53,7 +53,7 @@ def _create_pipeline(
     metadata_path: Text,
     beam_pipeline_args: List[Text],
 ) -> pipeline.Pipeline:
-  """Implements a learn-to-rank pipeline with TFX and Kubeflow Pipelines."""
+  """Implements a learn-to-rank pipeline with TFX."""
 
   # Brings data into the pipeline. It assumes ELWC is already materialized.
   example_gen = ImportExampleGen(
