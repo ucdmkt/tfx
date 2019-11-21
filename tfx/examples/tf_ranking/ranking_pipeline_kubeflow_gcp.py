@@ -58,7 +58,7 @@ def _create_pipeline(
   # Brings data into the pipeline. It assumes ELWC is already materialized.
   example_gen = ImportExampleGen(
       input=dsl_utils.external_input(data_root),
-      # Due to https://github.com/tensorflow/tfx/issues/956), explicit
+      # Due to https://github.com/tensorflow/tfx/issues/956, explicit
       # input_config is necessary when data to ImportExampleGen is in GCS.
       input_config=example_gen_pb2.Input(
           splits=[
