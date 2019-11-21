@@ -55,8 +55,17 @@ def _create_pipeline(
 ) -> pipeline.Pipeline:
   """Implements a learn-to-rank pipeline with TFX and Kubeflow Pipelines."""
 
-  # Brings data into the pipeline or otherwise joins/converts training data.
-  example_gen = ImportExampleGen(input=dsl_utils.external_input(data_root))
+  # Brings data into the pipeline. It assumes ELWC is already materialized.
+  example_gen = ImportExampleGen(
+      input=dsl_utils.external_input(data_root),
+      # Due to https://github.com/tensorflow/tfx/issues/956), explicit
+      # input_config is necessary when data to ImportExampleGen is in GCS.
+      input_config=example_gen_pb2.Input(
+          splits=[
+              example_gen_pb2.Input.Split(name='all', pattern='*.tfrecord'),
+          ]
+      )
+  )
 
   return pipeline.Pipeline(
       pipeline_name=pipeline_name,

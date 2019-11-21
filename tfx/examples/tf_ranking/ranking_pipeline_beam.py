@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import absl
 import os
 from typing import List, Text
 from tfx.components.evaluator.component import Evaluator
@@ -25,6 +26,7 @@ from tfx.components.example_gen.import_example_gen.component import ImportExampl
 from tfx.orchestration import metadata
 from tfx.orchestration import pipeline
 from tfx.orchestration.beam import beam_dag_runner
+from tfx.proto import example_gen_pb2
 from tfx.utils import dsl_utils
 
 _pipeline_name = 'ranking_pipeline_beam'
@@ -34,7 +36,7 @@ _output_bucket = 'gs://tfx-kfp-ltr-bucket'
 _tfx_root = os.path.join(_output_bucket, 'tfx')
 _pipeline_root = os.path.join(_tfx_root, _pipeline_name)
 
-_data_root = os.path.join(_input_bucket, 'data')
+_data_root = os.path.join(_input_bucket, 'data/')
 
 _project_id = 'tfx-kfp-learn-to-rank'
 _gcp_region = 'us-central1'
@@ -53,8 +55,17 @@ def _create_pipeline(
 ) -> pipeline.Pipeline:
   """Implements a learn-to-rank pipeline with TFX and Kubeflow Pipelines."""
 
-  # Brings data into the pipeline or otherwise joins/converts training data.
-  example_gen = ImportExampleGen(input=dsl_utils.external_input(data_root))
+  # Brings data into the pipeline. It assumes ELWC is already materialized.
+  example_gen = ImportExampleGen(
+      input=dsl_utils.external_input(data_root),
+      # Due to https://github.com/tensorflow/tfx/issues/956), explicit
+      # input_config is necessary when data to ImportExampleGen is in GCS.
+      input_config=example_gen_pb2.Input(
+          splits=[
+              example_gen_pb2.Input.Split(name='all', pattern='*.tfrecord'),
+          ]
+      )
+  )
 
   return pipeline.Pipeline(
       pipeline_name=pipeline_name,
@@ -67,6 +78,8 @@ def _create_pipeline(
 
 
 if __name__ == '__main__':
+  absl.logging.set_verbosity(absl.logging.INFO)
+
   beam_dag_runner.BeamDagRunner().run(
       _create_pipeline(
           pipeline_name=_pipeline_name,
