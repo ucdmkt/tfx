@@ -36,10 +36,7 @@ _output_bucket = 'gs://tfx-kfp-ltr-bucket'
 _tfx_root = os.path.join(_output_bucket, 'tfx')
 _pipeline_root = os.path.join(_tfx_root, _pipeline_name)
 
-_data_root = os.path.join(_input_bucket, 'data/')
-
-_project_id = 'tfx-kfp-learn-to-rank'
-_gcp_region = 'us-central1'
+_data_root = os.path.join(_input_bucket, 'antique_data/')
 
 _metadata_path = os.path.join(
     os.environ['HOME'], 'tfx', 'metadata', _pipeline_name, 'metadata.db')
@@ -62,7 +59,7 @@ def _create_pipeline(
       # input_config is necessary when data to ImportExampleGen is in GCS.
       input_config=example_gen_pb2.Input(
           splits=[
-              example_gen_pb2.Input.Split(name='all', pattern='*.tfrecord'),
+              example_gen_pb2.Input.Split(name='all', pattern='*.tfrecords'),
           ]
       )
   )

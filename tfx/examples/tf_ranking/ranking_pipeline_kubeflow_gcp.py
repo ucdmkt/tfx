@@ -24,6 +24,7 @@ from tfx.components.evaluator.component import Evaluator
 from tfx.components.example_gen.import_example_gen.component import ImportExampleGen
 from tfx.orchestration import pipeline
 from tfx.orchestration.kubeflow import kubeflow_dag_runner
+from tfx.proto import example_gen_pb2
 from tfx.utils import dsl_utils
 
 _pipeline_name = 'ranking_pipeline_kubeflow_gcp'
@@ -33,7 +34,7 @@ _output_bucket = 'gs://tfx-kfp-ltr-bucket'
 _tfx_root = os.path.join(_output_bucket, 'tfx')
 _pipeline_root = os.path.join(_tfx_root, _pipeline_name)
 
-_data_root = os.path.join(_input_bucket, 'data')
+_data_root = os.path.join(_input_bucket, 'antique_data')
 
 _project_id = 'tfx-kfp-learn-to-rank'
 _gcp_region = 'us-central1'
@@ -62,7 +63,7 @@ def _create_pipeline(
       # input_config is necessary when data to ImportExampleGen is in GCS.
       input_config=example_gen_pb2.Input(
           splits=[
-              example_gen_pb2.Input.Split(name='all', pattern='*.tfrecord'),
+              example_gen_pb2.Input.Split(name='all', pattern='*.tfrecords'),
           ]
       )
   )
@@ -80,6 +81,9 @@ if __name__ == '__main__':
 
   runner_config = kubeflow_dag_runner.KubeflowDagRunnerConfig(
       kubeflow_metadata_config=metadata_config,
+      # This image contains https://github.com/ucdmkt/tfx/commit/e724164b27775713c62bba510f2b1ac23f85eb32
+      # in order to trick ImportExample.
+      tfx_image='gcr.io/tfx-kfp-learn-to-rank/tfx:latest',
   )
 
   kubeflow_dag_runner.KubeflowDagRunner(config=runner_config).run(
