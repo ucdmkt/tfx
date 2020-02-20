@@ -79,12 +79,14 @@ def _InputToSerializedExample(pipeline: beam.Pipeline,
                               exec_properties: Dict[Text, Any],
                               split_pattern: Text) -> beam.pvalue.PCollection:
   """Converts input to serialized TF examples."""
+  def _maybe_serialize(x):
+    # Returns deterministic string as partition is based on it.
+    return x if type(x) == bytes else x.SerializeToString(deterministic=True)
+
   return (pipeline
           | 'InputSourceToExample' >> input_to_example(
               input_dict, exec_properties, split_pattern)
-          # Returns deterministic string as partition is based on it.
-          | 'SerializeDeterministically' >>
-          beam.Map(lambda x: x.SerializeToString(deterministic=True)))
+          | 'SerializeDeterministically' >> beam.Map(_maybe_serialize))
 
 
 class BaseExampleGenExecutor(

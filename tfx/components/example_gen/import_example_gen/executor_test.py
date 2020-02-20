@@ -45,10 +45,12 @@ class ExecutorTest(tf.test.TestCase):
     with beam.Pipeline() as pipeline:
       examples = (
           pipeline
-          | 'ToTFExample' >> executor._ImportExample(
+          | 'ToSerializedRecord' >> executor._ImportExample(
               input_dict=self._input_dict,
               exec_properties={},
-              split_pattern='tfrecord/*'))
+              split_pattern='tfrecord/*')
+          | 'ToTFExample' >> beam.Map(tf.train.Example.FromString)
+      )
 
       def check_result(got):
         # We use Python assertion here to avoid Beam serialization error in

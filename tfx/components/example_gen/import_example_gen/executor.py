@@ -64,8 +64,7 @@ def _ImportExample(  # pylint: disable=invalid-name
           # TODO(jyzhao): support multiple input format.
           | 'ReadFromTFRecord' >>
           beam.io.ReadFromTFRecord(file_pattern=input_split_pattern)
-          # TODO(jyzhao): consider move serialization out of base example gen.
-          | 'ToTFExample' >> beam.Map(tf.train.Example.FromString))
+          )
 
 
 class Executor(BaseExampleGenExecutor):
