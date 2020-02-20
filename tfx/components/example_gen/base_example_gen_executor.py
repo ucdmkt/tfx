@@ -78,7 +78,7 @@ def _InputToSerializedExample(pipeline: beam.Pipeline,
                               input_dict: Dict[Text, List[types.Artifact]],
                               exec_properties: Dict[Text, Any],
                               split_pattern: Text) -> beam.pvalue.PCollection:
-  """Converts input to serialized TF examples."""
+  """Converts input proto to serialized bytes, if not already serialized."""
   def _maybe_serialize(x):
     # Returns deterministic string as partition is based on it.
     return x if type(x) == bytes else x.SerializeToString(deterministic=True)
