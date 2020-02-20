@@ -37,7 +37,7 @@ def _get_pypi_package_version() -> Optional[Text]:
   """Returns package version if TFX is installed from PyPI, otherwise None."""
   # We treat any integral patch version as published to PyPI, since development
   # packages always end with 'dev' or 'rc'.
-  if version.__version__.split('.')[2].isdigit():
+  if version.__version__.split('.')[-1].isdigit():
     return version.__version__
   else:
     return None
@@ -68,7 +68,10 @@ def make_beam_dependency_flags(beam_pipeline_args: List[Text]) -> List[Text]:
   absl.logging.info('Attempting to infer TFX Python dependency for beam')
   dependency_flags = []
   pypi_version = _get_pypi_package_version()
-  if pypi_version:
+  # TODO(b/147438224): refactor once PortableRunner drops no-binary.
+  if (pypi_version and '--runner=PortableRunner' not in beam_pipeline_args and
+      '--runner=FlinkRunner' not in beam_pipeline_args and
+      '--runner=SparkRunner' not in beam_pipeline_args):
     requirements_file = _build_requirements_file()
     absl.logging.info('Added --requirements_file=%s to beam args',
                       requirements_file)
@@ -110,10 +113,19 @@ def build_ephemeral_package() -> Text:
     RuntimeError: if dist directory has zero or multiple files.
   """
   tmp_dir = os.path.join(tempfile.mkdtemp(), 'build', 'tfx')
-  tfx_root_dir = os.path.dirname(os.path.dirname(__file__))
+  # Find the last directory named 'tfx' in this file's path and package it.
+  path_split = __file__.split(os.path.sep)
+  last_index = -1
+  for i in range(len(path_split)):
+    if path_split[i] == 'tfx':
+      last_index = i
+  if last_index < 0:
+    raise RuntimeError('Cannot locate directory \'tfx\' in the path %s' %
+                       __file__)
+  tfx_root_dir = os.path.sep.join(path_split[0:last_index + 1])
   absl.logging.info('Copying all content from install dir %s to temp dir %s',
                     tfx_root_dir, tmp_dir)
-  shutil.copytree(tfx_root_dir, tmp_dir)
+  shutil.copytree(tfx_root_dir, os.path.join(tmp_dir, 'tfx'))
   # Source directory default permission is 0555 but we need to be able to create
   # new setup.py file.
   os.chmod(tmp_dir, 0o720)

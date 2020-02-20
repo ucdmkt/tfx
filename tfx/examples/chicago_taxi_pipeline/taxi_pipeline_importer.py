@@ -116,7 +116,7 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
   # Uses TFMA to compute a evaluation statistics over features of a model.
   model_analyzer = Evaluator(
       examples=example_gen.outputs['examples'],
-      model_exports=trainer.outputs['model'],
+      model=trainer.outputs['model'],
       feature_slicing_spec=evaluator_pb2.FeatureSlicingSpec(specs=[
           evaluator_pb2.SingleSlicingSpec(
               column_for_slicing=['trip_start_hour'])
@@ -146,7 +146,7 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
       enable_cache=True,
       metadata_connection_config=metadata.sqlite_metadata_connection_config(
           metadata_path),
-      # TODO(b/141578059): The multi-processing API might change.
+      # TODO(b/142684737): The multi-processing API might change.
       beam_pipeline_args=['--direct_num_workers=%d' % direct_num_workers])
 
 

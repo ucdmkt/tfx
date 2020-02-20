@@ -29,12 +29,30 @@ import absl
 from ml_metadata.proto import metadata_store_pb2
 from tfx.components.base import base_component
 from tfx.orchestration import data_types
+from tfx.types import channel
 
 # Argo's workflow name cannot exceed 63 chars:
 # see https://github.com/argoproj/argo/issues/1324.
 # MySQL's database name cannot exceed 64 chars:
 # https://dev.mysql.com/doc/refman/5.6/en/identifiers.html
 MAX_PIPELINE_NAME_LENGTH = 63
+
+# Name of pipeline_root parameter.
+_PIPELINE_ROOT = 'pipeline-root'
+
+
+# Pipeline root is by default specified as a RuntimeParameter when runnning on
+# KubeflowDagRunner. This constant offers users an easy access to the pipeline
+# root placeholder when defining a pipeline. For example,
+#
+# pusher = Pusher(
+#     model_export=trainer.outputs['model'],
+#     model_blessing=model_validator.outputs['blessing'],
+#     push_destination=pusher_pb2.PushDestination(
+#         filesystem=pusher_pb2.PushDestination.Filesystem(
+#             base_directory=os.path.join(
+#                 str(pipeline.ROOT_PARAMETER), 'model_serving'))))
+ROOT_PARAMETER = data_types.RuntimeParameter(name=_PIPELINE_ROOT, ptype=Text)
 
 
 class Pipeline(object):
@@ -137,7 +155,9 @@ class Pipeline(object):
         assert not producer_map.get(
             output_channel), '{} produced more than once'.format(output_channel)
         producer_map[output_channel] = component
-        # Fill in detailed artifact properties.
+        output_channel.producer_info = channel.ChannelProducerInfo(
+            component_id=component.id, key=key)
+        # TODO(ruoyu): Remove after switching to context-based resolution.
         for artifact in output_channel.get():
           artifact.name = key
           artifact.pipeline_name = self.pipeline_info.pipeline_name

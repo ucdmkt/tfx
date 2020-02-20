@@ -43,14 +43,16 @@ class ContainerBuilder(object):
 
   def __init__(self,
                target_image: Optional[Text] = None,
-               skaffold_cmd: Optional[Text] = labels.SKAFFOLD_COMMAND,
-               buildspec_filename: Optional[Text] = labels.BUILD_SPEC_FILENAME,
-               dockerfile_name: Optional[Text] = labels.DOCKERFILE_NAME,
-               setup_py_filename: Optional[Text] = labels.SETUP_PY_FILENAME):
+               base_image: Optional[Text] = None,
+               skaffold_cmd: Optional[Text] = None,
+               buildspec_filename: Optional[Text] = None,
+               dockerfile_name: Optional[Text] = None,
+               setup_py_filename: Optional[Text] = None):
     """Initialization.
 
     Args:
       target_image: the target image path to be built.
+      base_image: the image path to use as the base image.
       skaffold_cmd: skaffold command.
       buildspec_filename: the buildspec file path that is accessible to the
         current execution environment. It could be either absolute path or
@@ -62,13 +64,18 @@ class ContainerBuilder(object):
         python package for the workspace directory. If not specified, the
         whole directory is copied and PYTHONPATH is configured.
     """
-    self._skaffold_cmd = skaffold_cmd
+    base_image = base_image or labels.BASE_IMAGE
+    self._skaffold_cmd = skaffold_cmd or labels.SKAFFOLD_COMMAND
+    buildspec_filename = buildspec_filename or labels.BUILD_SPEC_FILENAME
+    dockerfile_name = dockerfile_name or labels.DOCKERFILE_NAME
+    setup_py_filename = setup_py_filename or labels.SETUP_PY_FILENAME
+
     if os.path.exists(buildspec_filename):
       self._buildspec = buildspec.BuildSpec(filename=buildspec_filename)
       if target_image is not None:
         click.echo(
             'Target image %s is not used. If the build spec is '
-            'provicded, update the target image in the build spec '
+            'provided, update the target image in the build spec '
             'file %s.' % (target_image, buildspec_filename))
     else:
       self._buildspec = buildspec.BuildSpec.load_default(
@@ -78,7 +85,8 @@ class ContainerBuilder(object):
 
     Dockerfile(
         filename=os.path.join(self._buildspec.build_context, dockerfile_name),
-        setup_py_filename=setup_py_filename)
+        setup_py_filename=setup_py_filename,
+        base_image=base_image)
 
   def build(self):
     """Build the container and return the built image path with SHA."""

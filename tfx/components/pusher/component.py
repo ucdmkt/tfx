@@ -17,7 +17,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Any, Dict, Optional, Text
+from typing import Any, Dict, Optional, Text, Union
+
+import absl
 
 from tfx import types
 from tfx.components.base import base_component
@@ -66,36 +68,47 @@ class Pusher(base_component.BaseComponent):
       self,
       model: types.Channel = None,
       model_blessing: types.Channel = None,
-      push_destination: Optional[pusher_pb2.PushDestination] = None,
+      infra_blessing: Optional[types.Channel] = None,
+      push_destination: Optional[Union[pusher_pb2.PushDestination,
+                                       Dict[Text, Any]]] = None,
       custom_config: Optional[Dict[Text, Any]] = None,
       custom_executor_spec: Optional[executor_spec.ExecutorSpec] = None,
-      model_push: Optional[types.Channel] = None,
+      output: Optional[types.Channel] = None,
       model_export: Optional[types.Channel] = None,
       instance_name: Optional[Text] = None):
     """Construct a Pusher component.
 
     Args:
-      model: A Channel of 'ModelExportPath' type, usually produced by
-        Trainer component. Will be deprecated in the future for the `model`
-        parameter.
-      model_blessing: A Channel of 'ModelBlessingPath' type, usually produced by
-        ModelValidator component. _required_
+      model: A Channel of type `standard_artifacts.Model`, usually produced by
+        a Trainer component.
+      model_blessing: A Channel of type `standard_artifacts.ModelBlessing`,
+        usually produced by a ModelValidator component. _required_
+      infra_blessing: An optional Channel of type
+        `standard_artifacts.InfraBlessing`, usually produced from an
+        InfraValidator component.
       push_destination: A pusher_pb2.PushDestination instance, providing info
         for tensorflow serving to load models. Optional if executor_class
-        doesn't require push_destination.
+        doesn't require push_destination. If any field is provided as a
+        RuntimeParameter, push_destination should be constructed as a dict with
+        the same field names as PushDestination proto message.
       custom_config: A dict which contains the deployment job parameters to be
-        passed to cloud-based training platforms.  The
-        [Kubeflow
+        passed to cloud-based training platforms.  The [Kubeflow
           example](https://github.com/tensorflow/tfx/blob/master/tfx/examples/chicago_taxi_pipeline/taxi_pipeline_kubeflow.py#L211)
-          contains an example how this can be used by custom executors.
+            contains an example how this can be used by custom executors.
       custom_executor_spec: Optional custom executor spec.
-      model_push: Optional output 'ModelPushPath' channel with result of push.
+      output: Optional output `standard_artifacts.PushedModel` channel with
+        result of push.
       model_export: Backwards compatibility alias for the 'model' argument.
       instance_name: Optional unique instance name. Necessary if multiple Pusher
         components are declared in the same pipeline.
     """
-    model = model or model_export
-    model_push = model_push or types.Channel(
+    if model_export:
+      absl.logging.warning(
+          'The "model_export" argument to the Pusher component has '
+          'been renamed to "model" and is deprecated. Please update your '
+          'usage as support for this argument will be removed soon.')
+      model = model_export
+    output = output or types.Channel(
         type=standard_artifacts.PushedModel,
         artifacts=[standard_artifacts.PushedModel()])
     if push_destination is None and not custom_executor_spec:
@@ -103,11 +116,12 @@ class Pusher(base_component.BaseComponent):
                        'custom_executor_spec is supplied that does not require '
                        'it.')
     spec = PusherSpec(
-        model_export=model,
+        model=model,
         model_blessing=model_blessing,
+        infra_blessing=infra_blessing,
         push_destination=push_destination,
         custom_config=custom_config,
-        model_push=model_push)
+        pushed_model=output)
     super(Pusher, self).__init__(
         spec=spec,
         custom_executor_spec=custom_executor_spec,

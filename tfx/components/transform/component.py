@@ -17,12 +17,17 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Optional, Text
+from typing import Optional, Text, Union
+
+import absl
+
 from tfx import types
 from tfx.components.base import base_component
 from tfx.components.base import executor_spec
 from tfx.components.transform import executor
+from tfx.orchestration import data_types
 from tfx.types import artifact
+from tfx.types import artifact_utils
 from tfx.types import standard_artifacts
 from tfx.types.standard_component_specs import TransformSpec
 
@@ -60,22 +65,24 @@ class Transform(base_component.BaseComponent):
   SPEC_CLASS = TransformSpec
   EXECUTOR_SPEC = executor_spec.ExecutorClassSpec(executor.Executor)
 
-  def __init__(self,
-               examples: types.Channel = None,
-               schema: types.Channel = None,
-               module_file: Optional[Text] = None,
-               preprocessing_fn: Optional[Text] = None,
-               transform_graph: Optional[types.Channel] = None,
-               transformed_examples: Optional[types.Channel] = None,
-               input_data: Optional[types.Channel] = None,
-               instance_name: Optional[Text] = None):
+  def __init__(
+      self,
+      examples: types.Channel = None,
+      schema: types.Channel = None,
+      module_file: Optional[Union[Text, data_types.RuntimeParameter]] = None,
+      preprocessing_fn: Optional[Union[Text,
+                                       data_types.RuntimeParameter]] = None,
+      transform_graph: Optional[types.Channel] = None,
+      transformed_examples: Optional[types.Channel] = None,
+      input_data: Optional[types.Channel] = None,
+      instance_name: Optional[Text] = None):
     """Construct a Transform component.
 
     Args:
-      examples: A Channel of 'ExamplesPath' type (required). This should
-        contain the two splits 'train' and 'eval'.
-      schema: A Channel of 'SchemaPath' type. This should contain a single
-        schema artifact.
+      examples: A Channel of type `standard_artifacts.Examples` (required).
+        This should contain the two splits 'train' and 'eval'.
+      schema: A Channel of type `standard_artifacts.Schema`. This should
+        contain a single schema artifact.
       module_file: The file path to a python module file, from which the
         'preprocessing_fn' function will be loaded. The function must have the
         following signature.
@@ -87,9 +94,9 @@ class Transform(base_component.BaseComponent):
         tf.SparseTensor.  Exactly one of 'module_file' or 'preprocessing_fn'
         must be supplied.
       preprocessing_fn: The path to python function that implements a
-         'preprocessing_fn'. See 'module_file' for expected signature of the
-         function. Exactly one of 'module_file' or 'preprocessing_fn' must
-         be supplied.
+        'preprocessing_fn'. See 'module_file' for expected signature of the
+        function. Exactly one of 'module_file' or 'preprocessing_fn' must be
+        supplied.
       transform_graph: Optional output 'TransformPath' channel for output of
         'tf.Transform', which includes an exported Tensorflow graph suitable for
         both training and serving;
@@ -104,7 +111,12 @@ class Transform(base_component.BaseComponent):
       ValueError: When both or neither of 'module_file' and 'preprocessing_fn'
         is supplied.
     """
-    examples = examples or input_data
+    if input_data:
+      absl.logging.warning(
+          'The "input_data" argument to the Transform component has '
+          'been renamed to "examples" and is deprecated. Please update your '
+          'usage as support for this argument will be removed soon.')
+      examples = input_data
     if bool(module_file) == bool(preprocessing_fn):
       raise ValueError(
           "Exactly one of 'module_file' or 'preprocessing_fn' must be supplied."
@@ -113,17 +125,17 @@ class Transform(base_component.BaseComponent):
     transform_graph = transform_graph or types.Channel(
         type=standard_artifacts.TransformGraph,
         artifacts=[standard_artifacts.TransformGraph()])
-    transformed_examples = transformed_examples or types.Channel(
-        type=standard_artifacts.Examples,
-        artifacts=[
-            standard_artifacts.Examples(split=split)
-            for split in artifact.DEFAULT_EXAMPLE_SPLITS
-        ])
+    if not transformed_examples:
+      example_artifact = standard_artifacts.Examples()
+      example_artifact.split_names = artifact_utils.encode_split_names(
+          artifact.DEFAULT_EXAMPLE_SPLITS)
+      transformed_examples = types.Channel(
+          type=standard_artifacts.Examples, artifacts=[example_artifact])
     spec = TransformSpec(
-        input_data=examples,
+        examples=examples,
         schema=schema,
         module_file=module_file,
         preprocessing_fn=preprocessing_fn,
-        transform_output=transform_graph,
+        transform_graph=transform_graph,
         transformed_examples=transformed_examples)
     super(Transform, self).__init__(spec=spec, instance_name=instance_name)

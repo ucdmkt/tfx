@@ -14,58 +14,79 @@
 # limitations under the License.
 """A set of standard TFX Artifact types.
 
-Note: the artifact definitions here are expected to change. We expect to add
-support for defining artifact-specific properties and to reconcile the TYPE_NAME
-strings to match their class names in an upcoming release.
+Note: the artifact definitions here are expected to change.
 """
 
-from tfx.types import artifact
+from tfx.types.artifact import Artifact
+from tfx.types.artifact import Property
+from tfx.types.artifact import PropertyType
+
+# Span for an artifact.
+SPAN_PROPERTY = Property(type=PropertyType.INT)
+# Comma separated of splits for an artifact. Empty string means artifact
+# has no split.
+SPLIT_NAMES_PROPERTY = Property(type=PropertyType.STRING)
 
 
-class Examples(artifact.Artifact):
-  TYPE_NAME = 'ExamplesPath'
+class Examples(Artifact):
+  TYPE_NAME = 'Examples'
+  PROPERTIES = {
+      'span': SPAN_PROPERTY,
+      'split_names': SPLIT_NAMES_PROPERTY,
+  }
 
 
-class ExampleAnomalies(artifact.Artifact):
-  TYPE_NAME = 'ExampleValidationPath'
+class ExampleAnomalies(Artifact):
+  TYPE_NAME = 'ExampleAnomalies'
+  PROPERTIES = {
+      'span': SPAN_PROPERTY,
+  }
 
 
-class ExampleStatistics(artifact.Artifact):
-  TYPE_NAME = 'ExampleStatisticsPath'
+class ExampleStatistics(Artifact):
+  TYPE_NAME = 'ExampleStatistics'
+  PROPERTIES = {
+      'span': SPAN_PROPERTY,
+      'split_names': SPLIT_NAMES_PROPERTY,
+  }
 
 
-class ExternalArtifact(artifact.Artifact):
-  TYPE_NAME = 'ExternalPath'
+class ExternalArtifact(Artifact):
+  TYPE_NAME = 'ExternalArtifact'
 
 
-class InferenceResult(artifact.Artifact):
+class InferenceResult(Artifact):
   TYPE_NAME = 'InferenceResult'
 
 
-class Model(artifact.Artifact):
-  TYPE_NAME = 'ModelExportPath'
+class InfraBlessing(Artifact):
+  TYPE_NAME = 'InfraBlessing'
 
 
-class ModelBlessing(artifact.Artifact):
-  TYPE_NAME = 'ModelBlessingPath'
+class Model(Artifact):
+  TYPE_NAME = 'Model'
 
 
-class ModelEvaluation(artifact.Artifact):
-  TYPE_NAME = 'ModelEvalPath'
+class ModelBlessing(Artifact):
+  TYPE_NAME = 'ModelBlessing'
 
 
-class PushedModel(artifact.Artifact):
-  TYPE_NAME = 'ModelPushPath'
+class ModelEvaluation(Artifact):
+  TYPE_NAME = 'ModelEvaluation'
 
 
-class Schema(artifact.Artifact):
-  TYPE_NAME = 'SchemaPath'
+class PushedModel(Artifact):
+  TYPE_NAME = 'PushedModel'
 
 
-class TransformGraph(artifact.Artifact):
-  TYPE_NAME = 'TransformPath'
+class Schema(Artifact):
+  TYPE_NAME = 'Schema'
+
+
+class TransformGraph(Artifact):
+  TYPE_NAME = 'TransformGraph'
 
 
 # Still WIP and subject to change.
-class HyperParameters(artifact.Artifact):
-  TYPE_NAME = 'StudyBestHParamsPath'
+class HyperParameters(Artifact):
+  TYPE_NAME = 'HyperParameters'

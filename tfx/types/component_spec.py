@@ -19,9 +19,10 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
+import copy
 import inspect
 import itertools
-from typing import Any, Dict, Optional, Text, Type
+from typing import Any, Dict, List, Optional, Text, Type
 
 from six import with_metaclass
 
@@ -32,6 +33,57 @@ from tfx.types.channel import Channel
 from tfx.types.node_common import _PropertyDictWrapper
 from tfx.utils import abc_utils
 from tfx.utils import json_utils
+
+
+def _make_default(data: Any) -> Any:
+  """Replaces RuntimeParameter by its ptype's default.
+
+  Args:
+    data: an object possibly containing RuntimeParameter.
+
+  Returns:
+    A version of input data where RuntimeParameters are replaced with
+    the default values of their ptype.
+  """
+  if isinstance(data, dict):
+    copy_data = copy.deepcopy(data)
+    _put_default_dict(copy_data)
+    return copy_data
+  if isinstance(data, list):
+    copy_data = copy.deepcopy(data)
+    _put_default_list(copy_data)
+    return copy_data
+  if data.__class__.__name__ == 'RuntimeParameter':
+    ptype = data.ptype
+    return ptype.__new__(ptype)
+
+  return data
+
+
+def _put_default_dict(dict_data: Dict[Text, Any]) -> None:
+  """Helper function to replace RuntimeParameter with its default value."""
+  for k, v in dict_data.items():
+    if isinstance(v, dict):
+      _put_default_dict(v)
+    elif isinstance(v, list):
+      _put_default_list(v)
+    elif v.__class__.__name__ == 'RuntimeParameter':
+      # Currently supporting int, float, bool, Text
+      ptype = v.ptype
+      dict_data[k] = ptype.__new__(ptype)
+
+
+def _put_default_list(list_data: List[Any]) -> None:
+  """Helper function to replace RuntimeParameter with its default value."""
+  for index, item in enumerate(list_data):
+    if isinstance(item, dict):
+      _put_default_dict(item)
+    elif isinstance(item, list):
+      _put_default_list(item)
+    elif item.__class__.__name__ == 'RuntimeParameter':
+      # Currently supporting int, float, bool, Text
+      ptype = item.ptype
+      list_data[index] = ptype.__new__(ptype)
 
 
 class ComponentSpec(with_metaclass(abc.ABCMeta, json_utils.Jsonable)):
@@ -102,7 +154,6 @@ class ComponentSpec(with_metaclass(abc.ABCMeta, json_utils.Jsonable)):
              'dict; got %s instead.') % (self.__class__, param_name, param))
 
     # Validate that the ComponentSpec class is well-formed.
-    # TODO(b/128836890): Make RuntimeParameter in compliance with this check.
     seen_arg_names = set()
     for arg_name, arg in itertools.chain(self.PARAMETERS.items(),
                                          self.INPUTS.items(),
@@ -164,12 +215,19 @@ class ComponentSpec(with_metaclass(abc.ABCMeta, json_utils.Jsonable)):
       if arg.optional and arg_name not in self._raw_args:
         continue
       value = self._raw_args[arg_name]
+
       if (inspect.isclass(arg.type) and
           issubclass(arg.type, message.Message) and value):
         # Create deterministic json string as it will be stored in metadata for
         # cache check.
-        value = json_format.MessageToJson(value, sort_keys=True)
+        if isinstance(value, dict):
+          value = json_utils.dumps(value)
+        else:
+          value = json_format.MessageToJson(
+              message=value, sort_keys=True, preserving_proto_field_name=True)
+
       self.exec_properties[arg_name] = value
+
     for arg_name, arg in self.INPUTS.items():
       if arg.optional and not self._raw_args.get(arg_name):
         continue
@@ -240,14 +298,61 @@ class ExecutionParameter(_ComponentParameter):
             other.type == self.type and other.optional == self.optional)
 
   def type_check(self, arg_name: Text, value: Any):
-    # Can't type check generics. Note that we need to do this strange check form
-    # since typing.GenericMeta (which became typing._GenericAlias in Python 3.7)
-    # is not exposed.
-    if self.type.__class__.__name__ in ('GenericMeta', '_GenericAlias'):
-      return
-    if not isinstance(value, self.type):
-      raise TypeError('Expected type %s for parameter %r but got %s.' %
-                      (self.type, arg_name, value))
+    """Perform type check to the parameter passed in."""
+
+    # Following helper function is needed due to the lack of subscripted
+    # type check support in Python 3.7. Here we hold the assumption that no
+    # nested container type is declared as the parameter type.
+    # For example:
+    # Dict[Text, List[str]] <------ Not allowed.
+    # Dict[Text, Any] <------ Okay.
+    def _type_check_helper(value: Any, declared: Type):  # pylint: disable=g-bare-generic
+      """Helper type-checking function."""
+      if declared == Any:
+        return
+      if declared.__class__.__name__ in ('_GenericAlias', 'GenericMeta'):
+        # Should be dict or list
+        if declared.__origin__ in [Dict, dict]:  # pylint: disable=protected-access
+          key_type, val_type = declared.__args__[0], declared.__args__[1]
+          if not isinstance(value, dict):
+            raise TypeError('Expecting a dict for parameter %r, but got %s '
+                            'instead' % (arg_name, type(value)))
+          for k, v in value.items():
+            if key_type != Any and not isinstance(k, key_type):
+              raise TypeError('Expecting key type %s for parameter %r, '
+                              'but got %s instead.' %
+                              (str(key_type), arg_name, type(k)))
+            if val_type != Any and not isinstance(v, val_type):
+              raise TypeError('Expecting value type %s for parameter %r, '
+                              'but got %s instead.' % (
+                                  str(val_type), arg_name, type(v)))
+        elif declared.__origin__ in [List, list]:  # pylint: disable=protected-access
+          val_type = declared.__args__[0]
+          if not isinstance(value, list):
+            raise TypeError('Expecting a list for parameter %r, '
+                            'but got %s instead.' % (arg_name, type(value)))
+          if val_type == Any:
+            return
+          for item in value:
+            if not isinstance(item, val_type):
+              raise TypeError('Expecting item type %s for parameter %r, '
+                              'but got %s instead.' % (
+                                  str(val_type), arg_name, type(item)))
+        else:
+          raise TypeError('Unexpected type of parameter: %r' % arg_name)
+      elif isinstance(value, dict) and issubclass(declared, message.Message):
+        # If a dict is passed in and is compared against a pb message,
+        # do the type-check by converting it to pb message.
+        dict_with_default = _make_default(value)
+        json_format.ParseDict(dict_with_default, declared())
+      else:
+        if not isinstance(value, declared):
+          raise TypeError('Expected type %s for parameter %r '
+                          'but got %s instead.' % (
+                              str(declared), arg_name, value))
+
+    value_with_default = _make_default(value)
+    _type_check_helper(value_with_default, self.type)
 
 
 class ChannelParameter(_ComponentParameter):
@@ -269,34 +374,23 @@ class ChannelParameter(_ComponentParameter):
 
   def __init__(
       self,
-      type_name: Optional[Text] = None,
       type: Optional[Type[Artifact]] = None,  # pylint: disable=redefined-builtin
       optional: Optional[bool] = False):
-    # TODO(b/138664975): either deprecate or remove string-based artifact type
-    # definition before 0.14.0 release.
-    if bool(type_name) == bool(type):
+    if not (inspect.isclass(type) and issubclass(type, Artifact)):  # pytype: disable=wrong-arg-types
       raise ValueError(
-          'Exactly one of "type" or "type_name" must be passed to the '
-          'constructor of Channel.')
-    if type:
-      if not issubclass(type, Artifact):  # pytype: disable=wrong-arg-types
-        raise ValueError(
-            'Argument "type" of Channel constructor must be a subclass of'
-            'tfx.types.Artifact.')
-      type_name = type.TYPE_NAME  # pytype: disable=attribute-error
-    self.type_name = type_name
+          'Argument "type" of Channel constructor must be a subclass of'
+          'tfx.types.Artifact.')
+    self.type = type
     self.optional = optional
 
   def __repr__(self):
-    return 'ChannelParameter(type_name: %s)' % (self.type_name,)
+    return 'ChannelParameter(type: %s)' % (self.type,)
 
   def __eq__(self, other):
     return (isinstance(other.__class__, self.__class__) and
-            other.type_name == self.type_name and
-            other.optional == self.optional)
+            other.type == self.type and other.optional == self.optional)
 
   def type_check(self, arg_name: Text, value: Channel):
-    if not isinstance(value, Channel) or value.type_name != self.type_name:
-      raise TypeError(
-          'Argument %s should be a Channel of type_name %r (got %s).' %
-          (arg_name, self.type_name, value))
+    if not isinstance(value, Channel) or value.type != self.type:
+      raise TypeError('Argument %s should be a Channel of type %r (got %s).' %
+                      (arg_name, self.type, value))

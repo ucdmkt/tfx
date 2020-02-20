@@ -22,6 +22,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+from typing import Text
 from kfp import onprem
 import tensorflow as tf
 import yaml
@@ -29,17 +30,17 @@ import yaml
 from ml_metadata.proto import metadata_store_pb2
 from tfx.components.example_gen.big_query_example_gen import component as big_query_example_gen_component
 from tfx.components.statistics_gen import component as statistics_gen_component
+from tfx.orchestration import data_types
 from tfx.orchestration import pipeline as tfx_pipeline
-from tfx.orchestration.experimental.runtime_parameter import runtime_string_parameter
 from tfx.orchestration.kubeflow import kubeflow_dag_runner
 
 
 # 2-step pipeline under test.
 def _two_step_pipeline() -> tfx_pipeline.Pipeline:
-  table_name = runtime_string_parameter.RuntimeStringParameter(
-      name='table-name', default='default-table')
+  table_name = data_types.RuntimeParameter(
+      name='table-name', ptype=Text, default='default-table')
   example_gen = big_query_example_gen_component.BigQueryExampleGen(
-      query='SELECT * FROM %s' % table_name)
+      query='SELECT * FROM %s' % str(table_name))
   statistics_gen = statistics_gen_component.StatisticsGen(
       examples=example_gen.outputs['examples'])
   return tfx_pipeline.Pipeline(
@@ -124,6 +125,25 @@ class KubeflowDagRunnerTest(tf.test.TestCase):
 
   def testDefaultPipelineOperatorFuncs(self):
     kubeflow_dag_runner.KubeflowDagRunner().run(_two_step_pipeline())
+    file_path = os.path.join(self.test_dir, 'two_step_pipeline.tar.gz')
+    self.assertTrue(tf.io.gfile.exists(file_path))
+
+    with tarfile.TarFile.open(file_path).extractfile(
+        'pipeline.yaml') as pipeline_file:
+      self.assertIsNotNone(pipeline_file)
+      pipeline = yaml.safe_load(pipeline_file)
+
+      containers = [
+          c for c in pipeline['spec']['templates'] if 'container' in c
+      ]
+      self.assertEqual(2, len(containers))
+
+  def testMountGcpServiceAccount(self):
+    kubeflow_dag_runner.KubeflowDagRunner(
+        config=kubeflow_dag_runner.KubeflowDagRunnerConfig(
+            pipeline_operator_funcs=kubeflow_dag_runner
+            .get_default_pipeline_operator_funcs(use_gcp_sa=True))).run(
+                _two_step_pipeline())
     file_path = os.path.join(self.test_dir, 'two_step_pipeline.tar.gz')
     self.assertTrue(tf.io.gfile.exists(file_path))
 

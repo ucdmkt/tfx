@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import os
 from typing import Dict, List, Text
+from absl import flags
 from tfx.components.base import executor_spec
 from tfx.components.evaluator.component import Evaluator
 from tfx.components.example_gen.big_query_example_gen.component import BigQueryExampleGen
@@ -37,7 +38,12 @@ from tfx.orchestration.kubeflow import kubeflow_dag_runner
 from tfx.proto import evaluator_pb2
 from tfx.proto import trainer_pb2
 
+FLAGS = flags.FLAGS
+flags.DEFINE_bool('distributed_training', False,
+                  'If True, enable distributed training.')
+
 _pipeline_name = 'chicago_taxi_pipeline_kubeflow_gcp'
+
 
 # Directory and data locations (uses Google Cloud Storage).
 _input_bucket = 'gs://my-bucket'
@@ -54,7 +60,7 @@ _project_id = 'my-gcp-project'
 # below.
 _module_file = os.path.join(_input_bucket, 'taxi_utils.py')
 
-# Region to use for Dataflow jobs and AI Platform training jobs.
+# Region to use for Dataflow jobs and AI Platform jobs.
 #   Dataflow: https://cloud.google.com/dataflow/docs/concepts/regional-endpoints
 #   AI Platform: https://cloud.google.com/ml-engine/docs/tensorflow/regions
 _gcp_region = 'us-central1'
@@ -82,6 +88,11 @@ _ai_platform_training_args = {
 _ai_platform_serving_args = {
     'model_name': 'chicago_taxi',
     'project_id': _project_id,
+    # The region to use when serving the model. See available regions here:
+    # https://cloud.google.com/ml-engine/docs/regions
+    # Note that serving currently only supports a single region:
+    # https://cloud.google.com/ml-engine/reference/rest/v1/projects.models#Model
+    'regions': [_gcp_region],
 }
 
 # Beam args to run data processing on DataflowRunner.
@@ -91,6 +102,7 @@ _beam_pipeline_args = [
     '--project=' + _project_id,
     '--temp_location=' + os.path.join(_output_bucket, 'tmp'),
     '--region=' + _gcp_region,
+    '--disk_size_gb=50',
 ]
 
 # The rate at which to sample rows from the Chicago Taxi dataset using BigQuery.
@@ -171,12 +183,15 @@ def _create_pipeline(
       transform_graph=transform.outputs['transform_graph'],
       train_args=trainer_pb2.TrainArgs(num_steps=10000),
       eval_args=trainer_pb2.EvalArgs(num_steps=5000),
-      custom_config={'ai_platform_training_args': ai_platform_training_args})
+      custom_config={
+          ai_platform_trainer_executor.TRAINING_ARGS_KEY:
+              ai_platform_training_args
+      })
 
   # Uses TFMA to compute a evaluation statistics over features of a model.
   model_analyzer = Evaluator(
       examples=example_gen.outputs['examples'],
-      model_exports=trainer.outputs['model'],
+      model=trainer.outputs['model'],
       feature_slicing_spec=evaluator_pb2.FeatureSlicingSpec(specs=[
           evaluator_pb2.SingleSlicingSpec(
               column_for_slicing=['trip_start_hour'])
@@ -193,7 +208,9 @@ def _create_pipeline(
           ai_platform_pusher_executor.Executor),
       model=trainer.outputs['model'],
       model_blessing=model_validator.outputs['blessing'],
-      custom_config={'ai_platform_serving_args': ai_platform_serving_args})
+      custom_config={
+          ai_platform_pusher_executor.SERVING_ARGS_KEY: ai_platform_serving_args
+      })
 
   return pipeline.Pipeline(
       pipeline_name=pipeline_name,
@@ -202,9 +219,7 @@ def _create_pipeline(
           example_gen, statistics_gen, infer_schema, validate_stats, transform,
           trainer, model_analyzer, model_validator, pusher
       ],
-      additional_pipeline_args={
-          'beam_pipeline_args': beam_pipeline_args,
-      },
+      beam_pipeline_args=beam_pipeline_args,
   )
 
 
@@ -222,8 +237,20 @@ if __name__ == '__main__':
   runner_config = kubeflow_dag_runner.KubeflowDagRunnerConfig(
       kubeflow_metadata_config=metadata_config,
       # Specify custom docker image to use.
-      tfx_image=tfx_image
-  )
+      tfx_image=tfx_image)
+
+  if FLAGS.distributed_training:
+    _ai_platform_training_args.update({
+        # You can specify the machine types, the number of replicas for workers
+        # and parameter servers.
+        # https://cloud.google.com/ml-engine/reference/rest/v1/projects.jobs#ScaleTier
+        'scaleTier': 'CUSTOM',
+        'masterType': 'large_model',
+        'workerType': 'standard',
+        'parameterServerType': 'standard',
+        'workerCount': 2,
+        'parameterServerCount': 1
+    })
 
   kubeflow_dag_runner.KubeflowDagRunner(config=runner_config).run(
       _create_pipeline(

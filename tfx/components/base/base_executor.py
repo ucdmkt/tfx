@@ -30,14 +30,23 @@ import apache_beam as beam
 from apache_beam.options.pipeline_options import DirectOptions
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.portability import python_urns
-from apache_beam.portability.api import beam_runner_api_pb2
 from apache_beam.runners.portability import fn_api_runner
 from future.utils import with_metaclass
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 from tfx import types
 from tfx.types import artifact_utils
+from tfx.utils import telemetry_utils
 from tfx.utils import dependency_utils
+
+# TODO(b/149185015): remove apache_beam.portability.api once we remove support
+# for Apache Beam 2.17 or below.
+beam_runner_api_pb2 = None
+environments = None
+try:
+  from apache_beam.portability.api import beam_runner_api_pb2  # pylint: disable=g-import-not-at-top
+except ImportError:
+  from apache_beam.transforms import environments  # pylint: disable=g-import-not-at-top
 
 
 class BaseExecutor(with_metaclass(abc.ABCMeta, object)):
@@ -92,6 +101,13 @@ class BaseExecutor(with_metaclass(abc.ABCMeta, object)):
     if self._beam_pipeline_args:
       self._beam_pipeline_args = dependency_utils.make_beam_dependency_flags(
           self._beam_pipeline_args)
+      executor_class_path = '%s.%s' % (self.__class__.__module__,
+                                       self.__class__.__name__)
+      # TODO(zhitaoli): Rethink how we can add labels and only normalize them
+      # if the job is submitted against GCP.
+      with telemetry_utils.scoped_labels(
+          {telemetry_utils.TFX_EXECUTOR: executor_class_path}):
+        self._beam_pipeline_args.extend(telemetry_utils.make_beam_labels_args())
 
   # TODO(b/126182711): Look into how to support fusion of multiple executors
   # into same pipeline.
@@ -113,13 +129,18 @@ class BaseExecutor(with_metaclass(abc.ABCMeta, object)):
                       parallelism)
 
     if parallelism > 1:
+      if beam_runner_api_pb2:
+        env = beam_runner_api_pb2.Environment(
+            urn=python_urns.SUBPROCESS_SDK,
+            payload=b'%s -m apache_beam.runners.worker.sdk_worker_main' %
+            (sys.executable or sys.argv[0]).encode('ascii'))
+      else:
+        env = environments.SubprocessSDKEnvironment(
+            command_string='%s -m apache_beam.runners.worker.sdk_worker_main' %
+            (sys.executable or sys.argv[0]))
       return beam.Pipeline(
           options=pipeline_options,
-          runner=fn_api_runner.FnApiRunner(
-              default_environment=beam_runner_api_pb2.Environment(
-                  urn=python_urns.SUBPROCESS_SDK,
-                  payload=b'%s -m apache_beam.runners.worker.sdk_worker_main' %
-                  (sys.executable or sys.argv[0]).encode('ascii'))))
+          runner=fn_api_runner.FnApiRunner(default_environment=env))
 
     return beam.Pipeline(argv=self._beam_pipeline_args)
 

@@ -18,18 +18,19 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Dict, Optional, Text
+from typing import Dict, Optional, Text, Type
 
 from ml_metadata.proto import metadata_store_pb2
 from tfx import types
 from tfx.dsl.resolvers import base_resolver
+from tfx.orchestration import data_types
 from tfx.orchestration import metadata
 
 
 def _generate_tfx_artifact(mlmd_artifact: metadata_store_pb2.Artifact,
-                           type_name: Text):
-  result = types.Artifact(type_name=type_name)
-  result.set_artifact(mlmd_artifact)
+                           artifact_type: Type[types.Artifact]):
+  result = artifact_type()
+  result.set_mlmd_artifact(mlmd_artifact)
   return result
 
 
@@ -45,25 +46,29 @@ class LatestArtifactsResolver(base_resolver.BaseResolver):
 
   def resolve(
       self,
+      pipeline_info: data_types.PipelineInfo,
       metadata_handler: metadata.Metadata,
       source_channels: Dict[Text, types.Channel],
   ) -> base_resolver.ResolveResult:
     artifacts_dict = {}
     resolve_state_dict = {}
+    pipeline_context = metadata_handler.get_pipeline_context(pipeline_info)
+    if pipeline_context is None:
+      raise RuntimeError('Pipeline context absent for %s' % pipeline_context)
+    artifacts_in_context = metadata_handler.get_published_artifacts_by_type_within_context(
+        [c.type_name for c in source_channels.values()], pipeline_context.id)
     for k, c in source_channels.items():
       previous_artifacts = sorted(
-          metadata_handler.get_artifacts_by_type(c.type_name),
-          key=lambda m: m.id,
-          reverse=True)
+          artifacts_in_context[c.type_name], key=lambda m: m.id, reverse=True)
       if len(previous_artifacts) >= self._desired_num_of_artifact:
         artifacts_dict[k] = [
-            _generate_tfx_artifact(a, c.type_name)
+            _generate_tfx_artifact(a, c.type)
             for a in previous_artifacts[:self._desired_num_of_artifact]
         ]
         resolve_state_dict[k] = True
       else:
         artifacts_dict[k] = [
-            _generate_tfx_artifact(a, c.type_name) for a in previous_artifacts
+            _generate_tfx_artifact(a, c.type) for a in previous_artifacts
         ]
         resolve_state_dict[k] = False
 

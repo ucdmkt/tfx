@@ -1,19 +1,22 @@
 # Current version (not yet released; still in development)
 
 ## Major Features and Improvements
-*   Enable KubeflowDagRunner to recognize RuntimeStringParameter and interpret 
-    them as Argo workflow parameter, so that user can specify their values at
-    runtime. Currently only string-typed execution properties can be 
-    parameterized in this way.
+*   Pipelines compiled using KubeflowDagRunner now defaults to using the
+    gRPC-based MLMD server deployed in Kubeflow Pipelines clusters when
+    performing operations on pipeline metadata.
+*   Added tfx model rewriting and tflite rewriter.
+*   Added LatestBlessedModelResolver as an experimental feature which gets the
+    latest model that was blessed by model validator.
+*   The specific `Artifact` subclass that was serialized (if defined in the
+    deserializing environment) will be used when deserializing `Artifact`s and
+    when reading `Artifact`s from ML Metadata (previously, objects of the
+    generic `tfx.types.artifact.Artifact` class were created in some cases).
 
 ## Bug fixes and other changes
-
-*   CSVExampleGen: started using the CSV decoding utilities in `tfx-bsl`
-    (`tfx-bsl>=0.15.2`)
-*   Fix problems with Airflow tutorial notebooks
-*   Performance improvements for the Transform Component (for its statistics
-    generation).
-*   Depended on `pyarrow>=0.14,<0.15`.
+*   Added --skaffold_cmd flag when updating a pipeline for kubeflow in CLI.
+*   Changed python_version to 3.7 when using TF 1.15 and later for Cloud AI Platform Prediction.
+*   Added 'tfx_runner' label for CAIP, BQML and Dataflow jobs submitted from
+    TFX components.
 
 ### Deprecations
 
@@ -22,6 +25,124 @@
 ### For pipeline authors
 
 ### For component authors
+
+## Documentation updates
+
+# Version 0.21.0
+
+## Major Features and Improvements
+
+*   TFX version 0.21.0 will be the last version of TFX supporting Python 2.
+*   Added support for `RuntimeParameter`s to allow users can specify templated
+    values at runtime. This is currently only supported in Kubeflow Pipelines.
+    Currently, only attributes in `ComponentSpec.PARAMETERS` and the URI of
+    external artifacts can be parameterized (component inputs / outputs can
+    not yet be parameterized). See
+    `tfx/examples/chicago_taxi_pipeline/taxi_pipeline_runtime_parameter.py`
+    for example usage.
+*   Users can access the parameterized pipeline root when defining the
+    pipeline by using the `pipeline.ROOT_PARAMETER` placeholder in
+    KubeflowDagRunner.
+*   Users can pass appropriately encoded Python `dict` objects to specify
+    protobuf parameters in `ComponentSpec.PARAMETERS`; these will be decoded
+    into the proper protobuf type. Users can avoid manually constructing complex
+    nested protobuf messages in the component interface.
+*   Added support in Trainer for using other model artifacts. This enables
+    scenarios such as warm-starting.
+*   Updated trainer executor to pass through custom config to the user module.
+*   Artifact type-specific properties can be defined through overriding the
+    `PROPERTIES` dictionary of a `types.artifact.Artifact` subclass.
+*   Added new example of chicago_taxi_pipeline on Google Cloud Bigquery ML.
+*   Added support for multi-core processing in the Flink and Spark Chicago Taxi
+    PortableRunner example.
+*   Added a metadata adapter in Kubeflow to support logging the Argo pod ID as
+    an execution property.
+*   Added a prototype Tuner component and an end-to-end iris example.
+*   Created new generic trainer executor for non estimator based model, e.g.,
+    native Keras.
+*   Updated to support passing `tfma.EvalConfig` in evaluator when calling TFMA.
+*   Users can create a pipeline using a new experimental CLI command,
+    `template`.
+*   Added an iris example with native Keras.
+
+## Bug fixes and other changes
+*   Switched the default behavior of KubeflowDagRunner to not mounting GCP
+    secret.
+*   Fixed "invalid spec: spec.arguments.parameters[6].name 'pipeline-root' is
+    not unique" error when the user include `pipeline.ROOT_PARAMETER` and run
+    pipeline on KFP.
+*   Added support for an hparams artifact as an input to Trainer in
+    preparation for tuner support.
+*   Refactored common dependencies in the TFX dockerfile to a base image to
+    improve the reliability of image building process.
+*   Fixes missing Tensorboard link in KubeflowDagRunner.
+*   Depends on `apache-beam[gcp]>=2.17,<2.18`
+*   Depends on `ml-metadata>=0.21,<0.22`.
+*   Depends on `tensorflow-data-validation>=0.21,<0.22`.
+*   Depends on `tensorflow-model-analysis>=0.21,<0.22`.
+*   Depends on `tensorflow-transform>=0.21,<0.22`.
+*   Depends on `tfx-bsl>=0.21,<0.22`.
+*   Depends on `pyarrow>=0.14,<0.15`.
+*   Removed `tf.compat.v1` usage for iris and cifar10 examples.
+*   CSVExampleGen: started using the CSV decoding utilities in `tfx-bsl`
+    (`tfx-bsl>=0.15.2`)
+*   Fixed problems with Airflow tutorial notebooks.
+*   Added performance improvements for the Transform Component (for statistics
+    generation).
+*   Raised exceptions when container building fails.
+*   Enhanced custom slack component by adding a kubeflow example.
+*   Allowed windows style paths in Transform component cache.
+*   Fixed bug in CLI (--engine=kubeflow) which uses hard coded obsolete image
+    (TFX 0.14.0) as the base image.
+*   Fixed bug in CLI (--engine=kubeflow) which could not handle skaffold
+    response when an already built image is reused.
+*   Allowed users to specify the region to use when serving with AI Platform.
+*   Allowed users to give deterministic job id to AI Platform Training job.
+*   System-managed artifact properties ("name", "state", "pipeline_name" and
+    "producer_component") are now stored as ML Metadata artifact custom
+    properties.
+*   Fixed loading trainer and transformation functions from python module files
+    without the .py extension.
+*   Fixed some ill-formed visualization when running on KFP.
+*   Removed system info from artifact properties and use channels to hold info
+    for generating MLMD queries.
+*   Rely on MLMD context for inter-component artifact resolution and execution
+    publishing.
+*   Added pipeline level context and component run level context.
+*   Included test data for examples/chicago_taxi_pipeline in package.
+*   Changed `BaseComponentLauncher` to require the user to pass in an ML
+    Metadata connection object instead of a ML Metadata connection config.
+*   Capped version of Tensorflow runtime used in Google Cloud integration to
+    1.15.
+*   Updated Chicago Taxi example dependencies to Beam 2.17.0, Flink 1.9.1, Spark
+    2.4.4.
+*   Fixed an issue where `build_ephemeral_package()` used an incorrect path to
+    locate the `tfx` directory.
+*   The ImporterNode now allows specification of general artifact properties.
+*   Added 'tfx_executor', 'tfx_version' and 'tfx_py_version' labels for CAIP,
+    BQML and Dataflow jobs submitted from TFX components.
+
+### Deprecations
+
+## Breaking changes
+
+### For pipeline authors
+*   Standard artifact TYPE_NAME strings were reconciled to match their class
+    names in `types.standard_artifacts`.
+*   The "split" property on multiple artifacts has been replaced with the
+    JSON-encoded "split_names" property on a single grouped artifact.
+*   The execution caching mechanism was changed to rely on ML Metadata
+    pipeline context. Existing cached executions will not be reused when running
+    on this version of TFX for the first time.
+*   The "split" property on multiple artifacts has been replaced with the
+    JSON-encoded "split_names" property on a single grouped artifact.
+
+### For component authors
+*   Artifact type name strings to the `types.artifact.Artifact` and
+    `types.channel.Channel` classes are no longer supported; usage here should
+    be replaced with references to the artifact subclasses defined in
+    `types.standard_artfacts.*` or to custom subclasses of
+    `types.artifact.Artifact`.
 
 ## Documentation updates
 
@@ -45,8 +166,8 @@
 *   Introduced `PipelineConfig` and `BaseComponentConfig` to control the
     platform specific settings for pipelines and components.
 *   Added a custom Executor of Pusher to push model to BigQuery ML for serving.
-*   Added KubernetesComponentLauncher to support launch ExecutorContainerSpec in a
-    Kubernetes cluster.
+*   Added KubernetesComponentLauncher to support launch ExecutorContainerSpec in
+    a Kubernetes cluster.
 *   Made model validator executor forward compatible with TFMA change.
 *   Added Iris flowers classification example.
 *   Added support for serialization and deserialization of components.
@@ -77,9 +198,9 @@
     engine, which requires containers built with the custom python code.
 *   Demonstrated DirectRunner multi-core processing in Chicago Taxi example,
     including Airflow and Beam.
-*   Added Kubeflow artifact visualization of inputs, outputs and
-    execution properties for components using a Markdown file. Added Tensorboard
-    to Trainer components as well.
+*   Added Kubeflow artifact visualization of inputs, outputs and execution
+    properties for components using a Markdown file. Added Tensorboard to
+    Trainer components as well.
 
 ## Bug fixes and other changes
 
@@ -141,15 +262,14 @@
     examples/chicago_taxi_pipeline/
 *   Moved interactive notebook classes into `tfx.orchestration.experimental`
     namespace.
-*   Starting from 1.15, package `tensorflow` comes with GPU support. Users
-    won't need to choose between `tensorflow` and `tensorflow-gpu`. If any GPU
-    devices are available, processes spawned by all TFX components will try to
-    utilize them; note that in rare cases, this may exhaust the memory of the
-    device(s).
-*   Caveat: `tensorflow` 2.0.0 is an exception and does not have GPU
-    support. If `tensorflow-gpu` 2.0.0 is installed before installing
-    `tfx`, it will be replaced with `tensorflow` 2.0.0.
-    Re-install `tensorflow-gpu` 2.0.0 if needed.
+*   Starting from 1.15, package `tensorflow` comes with GPU support. Users won't
+    need to choose between `tensorflow` and `tensorflow-gpu`. If any GPU devices
+    are available, processes spawned by all TFX components will try to utilize
+    them; note that in rare cases, this may exhaust the memory of the device(s).
+*   Caveat: `tensorflow` 2.0.0 is an exception and does not have GPU support. If
+    `tensorflow-gpu` 2.0.0 is installed before installing `tfx`, it will be
+    replaced with `tensorflow` 2.0.0. Re-install `tensorflow-gpu` 2.0.0 if
+    needed.
 *   Caveat: MLMD schema auto-upgrade is now disabled by default. For users who
     upgrades from 0.13 and do not want to lose the data in MLMD, please refer to
     [MLMD documentation](https://github.com/google/ml-metadata/blob/master/g3doc/get_started.md#upgrade-mlmd-library)
@@ -157,18 +277,17 @@
     0.14 should not be affected since there is not schema change between these
     two versions.
 
-
 ### For pipeline authors
 
 *   Deprecated the usage of `tf.contrib.training.HParams` in Trainer as it is
     deprecated in TF 2.0. User module relying on member method of that class
     will not be supported. Dot style property access will be the only supported
     style from now on.
-*   Any SavedModel produced by tf.Transform <=0.14 using any tf.contrib ops
-    (or tf.Transform ops that used tf.contrib ops such as tft.quantiles,
+*   Any SavedModel produced by tf.Transform <=0.14 using any tf.contrib ops (or
+    tf.Transform ops that used tf.contrib ops such as tft.quantiles,
     tft.bucketize, etc.) cannot be loaded with TF 2.0 since the contrib library
-    has been removed in 2.0. Please refer to this [issue]
-    (https://github.com/tensorflow/tfx/issues/838).
+    has been removed in 2.0. Please refer to this
+    [issue](https://github.com/tensorflow/tfx/issues/838).
 
 ### For component authors
 

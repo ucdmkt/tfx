@@ -21,13 +21,19 @@ This file is equivalent to examples/chicago_taxi/trainer/model.py and
 examples/chicago_taxi/preprocess.py.
 """
 
+from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import absl
 import tensorflow as tf
 import tensorflow_model_analysis as tfma
 import tensorflow_transform as tft
 from tensorflow_transform.tf_metadata import schema_utils
+
+from tensorflow_metadata.proto.v0 import schema_pb2
+from tfx.components.trainer import executor
+from tfx.utils import io_utils
 
 # Categorical features are assumed to each have a maximum value in the dataset.
 _MAX_CATEGORICAL_FEATURE_VALUES = [24, 31, 12]
@@ -222,11 +228,11 @@ def _input_fn(filenames, tf_transform_output, batch_size=200):
 
 
 # TFX will call this function
-def trainer_fn(hparams, schema):
+def trainer_fn(trainer_fn_args, schema):
   """Build the estimator using the high level API.
 
   Args:
-    hparams: Holds hyperparameters used to train the model as name/value pairs.
+    trainer_fn_args: Holds args used to train the model as name/value pairs.
     schema: Holds the schema of the training examples.
 
   Returns:
@@ -236,29 +242,35 @@ def trainer_fn(hparams, schema):
       - eval_spec: Spec for eval.
       - eval_input_receiver_fn: Input function for eval.
   """
-  # Number of nodes in the first layer of the DNN
-  first_dnn_layer_size = 100
-  num_dnn_layers = 4
-  dnn_decay_factor = 0.7
+  if trainer_fn_args.hyperparameters:
+    hp = trainer_fn_args.hyperparameters
+    first_dnn_layer_size = hp.get('first_dnn_layer_size')
+    num_dnn_layers = hp.get('num_dnn_layers')
+    dnn_decay_factor = hp.get('dnn_decay_factor')
+  else:
+    # Number of nodes in the first layer of the DNN
+    first_dnn_layer_size = 100
+    num_dnn_layers = 4
+    dnn_decay_factor = 0.7
 
   train_batch_size = 40
   eval_batch_size = 40
 
-  tf_transform_output = tft.TFTransformOutput(hparams.transform_output)
+  tf_transform_output = tft.TFTransformOutput(trainer_fn_args.transform_output)
 
   train_input_fn = lambda: _input_fn(  # pylint: disable=g-long-lambda
-      hparams.train_files,
+      trainer_fn_args.train_files,
       tf_transform_output,
       batch_size=train_batch_size)
 
   eval_input_fn = lambda: _input_fn(  # pylint: disable=g-long-lambda
-      hparams.eval_files,
+      trainer_fn_args.eval_files,
       tf_transform_output,
       batch_size=eval_batch_size)
 
   train_spec = tf.estimator.TrainSpec(  # pylint: disable=g-long-lambda
       train_input_fn,
-      max_steps=hparams.train_steps)
+      max_steps=trainer_fn_args.train_steps)
 
   serving_receiver_fn = lambda: _example_serving_receiver_fn(  # pylint: disable=g-long-lambda
       tf_transform_output, schema)
@@ -266,14 +278,15 @@ def trainer_fn(hparams, schema):
   exporter = tf.estimator.FinalExporter('chicago-taxi', serving_receiver_fn)
   eval_spec = tf.estimator.EvalSpec(
       eval_input_fn,
-      steps=hparams.eval_steps,
+      steps=trainer_fn_args.eval_steps,
       exporters=[exporter],
       name='chicago-taxi-eval')
 
   run_config = tf.estimator.RunConfig(
       save_checkpoints_steps=999, keep_checkpoint_max=1)
 
-  run_config = run_config.replace(model_dir=hparams.serving_model_dir)
+  run_config = run_config.replace(model_dir=trainer_fn_args.serving_model_dir)
+  warm_start_from = trainer_fn_args.base_model
 
   estimator = _build_estimator(
       # Construct layers sizes with exponetial decay
@@ -282,7 +295,7 @@ def trainer_fn(hparams, schema):
           for i in range(num_dnn_layers)
       ],
       config=run_config,
-      warm_start_from=hparams.warm_start_from)
+      warm_start_from=warm_start_from)
 
   # Create an input receiver for TFMA processing
   receiver_fn = lambda: _eval_input_receiver_fn(  # pylint: disable=g-long-lambda
@@ -294,3 +307,32 @@ def trainer_fn(hparams, schema):
       'eval_spec': eval_spec,
       'eval_input_receiver_fn': receiver_fn
   }
+
+
+# TFX generic trainer will call this function
+def run_fn(fn_args: executor.TrainerFnArgs):
+  """Train the model based on given args.
+
+  Args:
+    fn_args: Holds args used to train the model as name/value pairs.
+  """
+  schema = io_utils.parse_pbtxt_file(fn_args.schema_file, schema_pb2.Schema())
+
+  training_spec = trainer_fn(fn_args, schema)
+
+  # Train the model
+  absl.logging.info('Training model.')
+  tf.estimator.train_and_evaluate(training_spec['estimator'],
+                                  training_spec['train_spec'],
+                                  training_spec['eval_spec'])
+  absl.logging.info('Training complete.  Model written to %s',
+                    fn_args.serving_model_dir)
+
+  # Export an eval savedmodel for TFMA
+  absl.logging.info('Exporting eval_savedmodel for TFMA.')
+  tfma.export.export_eval_savedmodel(
+      estimator=training_spec['estimator'],
+      export_dir_base=fn_args.eval_model_dir,
+      eval_input_receiver_fn=training_spec['eval_input_receiver_fn'])
+
+  absl.logging.info('Exported eval_savedmodel to %s.', fn_args.eval_model_dir)

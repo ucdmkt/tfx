@@ -23,13 +23,15 @@ import os
 import mock
 import tensorflow as tf
 
-from tfx.extensions.google_cloud_ai_platform.pusher.executor import Executor
+from tfx.components.pusher import executor as tfx_pusher_executor
+from tfx.extensions.google_cloud_ai_platform.pusher import executor
 from tfx.types import standard_artifacts
 
 
 class ExecutorTest(tf.test.TestCase):
 
   def setUp(self):
+    super(ExecutorTest, self).setUp()
     self._source_data_dir = os.path.join(
         os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
@@ -40,58 +42,59 @@ class ExecutorTest(tf.test.TestCase):
     tf.io.gfile.makedirs(self._output_data_dir)
     self._model_export = standard_artifacts.Model()
     self._model_export.uri = os.path.join(self._source_data_dir,
-                                          'trainer/current/')
+                                          'trainer/current')
     self._model_blessing = standard_artifacts.ModelBlessing()
     self._input_dict = {
-        'model_export': [self._model_export],
-        'model_blessing': [self._model_blessing],
+        tfx_pusher_executor.MODEL_KEY: [self._model_export],
+        tfx_pusher_executor.MODEL_BLESSING_KEY: [self._model_blessing],
     }
 
     self._model_push = standard_artifacts.PushedModel()
     self._model_push.uri = os.path.join(self._output_data_dir, 'model_push')
     tf.io.gfile.makedirs(self._model_push.uri)
     self._output_dict = {
-        'model_push': [self._model_push],
+        tfx_pusher_executor.PUSHED_MODEL_KEY: [self._model_push],
     }
     self._exec_properties = {
         'custom_config': {
-            'ai_platform_serving_args': {
+            executor.SERVING_ARGS_KEY: {
                 'model_name': 'model_name',
                 'project_id': 'project_id'
             },
         },
         'push_destination': None,
     }
-    self._executor = Executor()
+    self._executor = executor.Executor()
 
-  @mock.patch(
-      'tfx.extensions.google_cloud_ai_platform.pusher.executor.runner'
-  )
+  @mock.patch.object(executor, 'runner', autospec=True)
   def testDoBlessed(self, mock_runner):
     self._model_blessing.uri = os.path.join(self._source_data_dir,
-                                            'model_validator/blessed/')
+                                            'model_validator/blessed')
     self._model_blessing.set_int_custom_property('blessed', 1)
     self._executor.Do(self._input_dict, self._output_dict,
                       self._exec_properties)
-    mock_runner.deploy_model_for_cmle_serving.assert_called_with(
-        mock.ANY, mock.ANY, mock.ANY)
-    self.assertNotEqual(0, len(tf.io.gfile.listdir(self._model_push.uri)))
+    executor_class_path = '%s.%s' % (self._executor.__class__.__module__,
+                                     self._executor.__class__.__name__)
+    mock_runner.deploy_model_for_aip_prediction.assert_called_once_with(
+        self._model_push.mlmd_artifact.custom_properties['pushed_model']
+        .string_value,
+        mock.ANY,
+        mock.ANY,
+        executor_class_path,
+    )
     self.assertEqual(
-        1, self._model_push.artifact.custom_properties['pushed'].int_value)
+        1, self._model_push.mlmd_artifact.custom_properties['pushed'].int_value)
 
-  @mock.patch(
-      'tfx.extensions.google_cloud_ai_platform.pusher.executor.runner'
-  )
+  @mock.patch.object(executor, 'runner', autospec=True)
   def testDoNotBlessed(self, mock_runner):
     self._model_blessing.uri = os.path.join(self._source_data_dir,
-                                            'model_validator/not_blessed/')
+                                            'model_validator/not_blessed')
     self._model_blessing.set_int_custom_property('blessed', 0)
     self._executor.Do(self._input_dict, self._output_dict,
                       self._exec_properties)
-    self.assertEqual(0, len(tf.io.gfile.listdir(self._model_push.uri)))
     self.assertEqual(
-        0, self._model_push.artifact.custom_properties['pushed'].int_value)
-    mock_runner.deploy_model_for_cmle_serving.assert_not_called()
+        0, self._model_push.mlmd_artifact.custom_properties['pushed'].int_value)
+    mock_runner.deploy_model_for_aip_prediction.assert_not_called()
 
 
 if __name__ == '__main__':

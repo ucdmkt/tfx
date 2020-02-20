@@ -2,47 +2,51 @@
 
 The Trainer TFX pipeline component trains a TensorFlow model.
 
-Trainer consumes:
-
-* Training tf.Examples transformed by a Transform pipeline component.
-* Eval tf.Examples transformed by a Transform pipeline component.
-* A data schema create by a SchemaGen pipeline component and optionally altered by
-the developer.
-
-Trainer emits: A SavedModel and an EvalSavedModel
-
 ## Trainer and TensorFlow
 
 Trainer makes extensive use of the Python
 [TensorFlow](https://www.tensorflow.org) API for training models.
 
-## Configuring a Trainer Component
+Note: TFX supports TensorFlow 1.15 and 2.x.
 
-A Trainer pipeline component is typically very easy to develop and requires little
-customization, since all of the work is done by the Trainer TFX component.  Your
-TensorFlow modeling code however may be arbitrarily complex.
+## Component
 
-Caution: Developers are strongly encouraged to use the Estimator API at this
-time.  In a later release we expect Keras to be much better supported than it
-currently is.
+Trainer takes:
 
-Typical code looks like this:
+*   tf.Examples used for training and eval.
+*   A user provided module file that defines the trainer logic.
+*   A data schema created by a SchemaGen pipeline component and optionally
+    altered by the developer.
+*   (https://developers.google.com/protocol-buffers)[Protobuf]
+definition of train args and eval args.
+*   (Optional) transform graph produced by an upstream Transform component.
+*   (Optional) pre-trained models used for scenarios such as warmstart.
+
+Trainer emits: A SavedModel and an optional EvalSavedModel
+
+## Estimator based Trainer
+
+To learn about using an (https://www.tensorflow.org/guide/estimator)[Estimator]
+based model with TFX and Trainer, see
+[Designing TensorFlow modeling code with tf.Estimator for TFX](train.md).
+
+### Configuring a Trainer Component
+
+Typical pipeline Python DSL code looks like this:
 
 ```python
-from tfx import components
+from tfx.components import Trainer
 
 ...
 
-trainer = components.Trainer(
-      module_file=taxi_pipeline_utils,
-      train_files=transform_training.outputs['output'],
-      eval_files=transform_eval.outputs['output'],
+trainer = Trainer(
+      module_file=module_file,
+      examples=transform.outputs['transformed_examples'],
       schema=infer_schema.outputs['schema'],
-      tf_transform_dir=transform_training.outputs['output'],
-      train_steps=10000,
-      eval_steps=5000,
-      warm_starting=True
-      )
+      base_models=latest_model_resolver.outputs['latest_model'],
+      transform_graph=transform.outputs['transform_graph'],
+      train_args=trainer_pb2.TrainArgs(num_steps=10000),
+      eval_args=trainer_pb2.EvalArgs(num_steps=5000))
 ```
 
 Trainer invokes a training module, which is specified in the `module_file`
@@ -50,15 +54,19 @@ parameter.  A typical training module looks like this:
 
 ```python
 # TFX will call this function
-def trainer_fn(hparams, schema):
+def trainer_fn(trainer_fn_args, schema):
   """Build the estimator using the high level API.
 
   Args:
-    hparams: Holds hyperparameters used to train the model as name/value pairs.
+    trainer_fn_args: Holds args used to train the model as name/value pairs.
     schema: Holds the schema of the training examples.
 
   Returns:
-    The estimator that will be used for training and eval
+    A dict of the following:
+      - estimator: The estimator that will be used for training and eval.
+      - train_spec: Spec for training.
+      - eval_spec: Spec for eval.
+      - eval_input_receiver_fn: Input function for eval.
   """
   # Number of nodes in the first layer of the DNN
   first_dnn_layer_size = 100
@@ -68,102 +76,128 @@ def trainer_fn(hparams, schema):
   train_batch_size = 40
   eval_batch_size = 40
 
+  tf_transform_output = tft.TFTransformOutput(trainer_fn_args.transform_output)
+
   train_input_fn = lambda: _input_fn(  # pylint: disable=g-long-lambda
-      hparams.train_files,
-      hparams.tf_transform_dir,
+      trainer_fn_args.train_files,
+      tf_transform_output,
       batch_size=train_batch_size)
 
   eval_input_fn = lambda: _input_fn(  # pylint: disable=g-long-lambda
-      hparams.eval_files,
-      hparams.tf_transform_dir,
+      trainer_fn_args.eval_files,
+      tf_transform_output,
       batch_size=eval_batch_size)
 
   train_spec = tf.estimator.TrainSpec(  # pylint: disable=g-long-lambda
       train_input_fn,
-      max_steps=hparams.train_steps)
+      max_steps=trainer_fn_args.train_steps)
 
   serving_receiver_fn = lambda: _example_serving_receiver_fn(  # pylint: disable=g-long-lambda
-      hparams.tf_transform_dir, schema)
+      tf_transform_output, schema)
 
   exporter = tf.estimator.FinalExporter('chicago-taxi', serving_receiver_fn)
   eval_spec = tf.estimator.EvalSpec(
       eval_input_fn,
-      steps=hparams.eval_steps,
+      steps=trainer_fn_args.eval_steps,
       exporters=[exporter],
       name='chicago-taxi-eval')
 
   run_config = tf.estimator.RunConfig(
       save_checkpoints_steps=999, keep_checkpoint_max=1)
 
-  run_config = run_config.replace(model_dir=hparams.serving_model_dir)
+  run_config = run_config.replace(model_dir=trainer_fn_args.serving_model_dir)
+  warm_start_from = trainer_fn_args.base_models[
+      0] if trainer_fn_args.base_models else None
 
   estimator = _build_estimator(
-      tf_transform_dir=hparams.tf_transform_dir,
-
       # Construct layers sizes with exponetial decay
       hidden_units=[
           max(2, int(first_dnn_layer_size * dnn_decay_factor**i))
           for i in range(num_dnn_layers)
       ],
       config=run_config,
-      warm_start_from=hparams.warm_start_from)
+      warm_start_from=warm_start_from)
 
-  # Input receiver for TFMA
+  # Create an input receiver for TFMA processing
   receiver_fn = lambda: _eval_input_receiver_fn(  # pylint: disable=g-long-lambda
-      hparams.tf_transform_dir, schema)
+      tf_transform_output, schema)
 
-  return TrainingSpec(estimator, train_spec, eval_spec, receiver_fn)
+  return {
+      'estimator': estimator,
+      'train_spec': train_spec,
+      'eval_spec': eval_spec,
+      'eval_input_receiver_fn': receiver_fn
+  }
+```
 
+## Generic Trainer
 
-def _build_estimator(tf_transform_dir,
-                     config,
-                     hidden_units=None,
-                     warm_start_from=None):
-  """Build an estimator for predicting the tipping behavior of taxi riders.
+To better support native Keras, we proposed a generic trainer which allows any
+TensorFlow training loop in TFX Trainer in addition to tf.estimator. For
+details, please see the
+[RFC for generic trainer](https://github.com/tensorflow/community/blob/master/rfcs/20200117-tfx-generic-trainer.md).
+
+### Configuring a Trainer Component with a generic executor
+
+Typical pipeline Python DSL code looks like this:
+
+```python
+from tfx.components import Trainer
+from tfx.components.base import executor_spec
+from tfx.components.trainer.executor import GenericExecutor
+
+...
+
+trainer = Trainer(
+    module_file=module_file,
+    custom_executor_spec=executor_spec.ExecutorClassSpec(GenericExecutor),
+    examples=transform.outputs['transformed_examples'],
+    transform_graph=transform.outputs['transform_graph'],
+    schema=infer_schema.outputs['schema'],
+    train_args=trainer_pb2.TrainArgs(num_steps=10000),
+    eval_args=trainer_pb2.EvalArgs(num_steps=5000))
+```
+
+Trainer invokes a training module, which is specified in the `module_file`
+parameter. Instead of `trainer_fn`, a `run_fn` is required in the module file if
+`GenericExecutor` is specified. A typical training module looks like this:
+
+```python
+# TFX Trainer will call this function.
+def run_fn(fn_args: TrainerFnArgs):
+  """Train the model based on given args.
 
   Args:
-    tf_transform_dir: directory in which the tf-transform model was written
-      during the preprocessing step.
-    config: tf.contrib.learn.RunConfig defining the runtime environment for the
-      estimator (including model_dir).
-    hidden_units: [int], the layer sizes of the DNN (input layer first)
-    warm_start_from: Optional directory to warm start from.
-
-  Returns:
-    Resulting DNNLinearCombinedClassifier.
+    fn_args: Holds args used to train the model as name/value pairs.
   """
-  metadata_dir = os.path.join(tf_transform_dir,
-                              transform_fn_io.TRANSFORMED_METADATA_DIR)
-  transformed_metadata = metadata_io.read_metadata(metadata_dir)
-  transformed_feature_spec = transformed_metadata.schema.as_feature_spec()
+  tf_transform_output = tft.TFTransformOutput(fn_args.transform_output)
 
-  transformed_feature_spec.pop(_transformed_name(_LABEL_KEY))
+  train_dataset = _input_fn(fn_args.train_files, tf_transform_output, 40)
+  eval_dataset = _input_fn(fn_args.eval_files, tf_transform_output, 40)
 
-  real_valued_columns = [
-      tf.feature_column.numeric_column(key, shape=())
-      for key in _transformed_names(_DENSE_FLOAT_FEATURE_KEYS)
-  ]
-  categorical_columns = [
-      tf.feature_column.categorical_column_with_identity(
-          key, num_buckets=_VOCAB_SIZE + _OOV_SIZE, default_value=0)
-      for key in _transformed_names(_VOCAB_FEATURE_KEYS)
-  ]
-  categorical_columns += [
-      tf.feature_column.categorical_column_with_identity(
-          key, num_buckets=_FEATURE_BUCKET_COUNT, default_value=0)
-      for key in _transformed_names(_BUCKET_FEATURE_KEYS)
-  ]
-  categorical_columns += [
-      tf.feature_column.categorical_column_with_identity(
-          key, num_buckets=num_buckets, default_value=0)
-      for key, num_buckets in zip(
-          _transformed_names(_CATEGORICAL_FEATURE_KEYS),  #
-          _MAX_CATEGORICAL_FEATURE_VALUES)
-  ]
-  return tf.estimator.DNNLinearCombinedClassifier(
-      config=config,
-      linear_feature_columns=categorical_columns,
-      dnn_feature_columns=real_valued_columns,
-      dnn_hidden_units=hidden_units or [100, 70, 50, 25],
-      warm_start_from=warm_start_from)
+  # To use distribution strategy, create an appropriate tf.distribute.Strategy
+  # and move the creation and compiling of Keras model inside `strategy.scope`.
+  #
+  # For example, replace `model = _build_keras_model()` with:
+  #   mirrored_strategy = tf.distribute.MirroredStrategy()
+  #   with mirrored_strategy.scope():
+  #     model = _build_keras_model()
+  model = _build_keras_model()
+
+  model.fit(
+      train_dataset,
+      steps_per_epoch=fn_args.train_steps,
+      validation_data=eval_dataset,
+      validation_steps=fn_args.eval_steps)
+
+  signatures = {
+      'serving_default':
+          _get_serve_tf_examples_fn(model,
+                                    tf_transform_output).get_concrete_function(
+                                        tf.TensorSpec(
+                                            shape=[None],
+                                            dtype=tf.string,
+                                            name='examples')),
+  }
+  model.save(fn_args.serving_model_dir, save_format='tf', signatures=signatures)
 ```

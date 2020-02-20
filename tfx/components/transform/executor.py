@@ -23,7 +23,6 @@ from typing import Any, Dict, Generator, Iterable, List, Mapping, Optional, Sequ
 
 import absl
 import apache_beam as beam
-import numpy as np
 import pyarrow as pa
 import tensorflow as tf
 import tensorflow_data_validation as tfdv
@@ -43,12 +42,26 @@ from tensorflow_metadata.proto.v0 import statistics_pb2
 from tfx import types
 from tfx.components.base import base_executor
 from tfx.components.transform import labels
+from tfx.components.transform import stats_options as transform_stats_options
 from tfx.components.transform import messages
 from tfx.components.util import value_utils
 from tfx.types import artifact_utils
 from tfx.utils import import_utils
 from tfx.utils import io_utils
 
+
+# Key for examples in executor input_dict.
+EXAMPLES_KEY = 'examples'
+# Key for schema in executor input_dict.
+SCHEMA_KEY = 'schema'
+
+# Key for temp path, for internal use only.
+TEMP_PATH_KEY = 'temp_path'
+
+# Key for transform graph in executor output_dict.
+TRANSFORM_GRAPH_KEY = 'transform_graph'
+# Key for output model in executor output_dict.
+TRANSFORMED_EXAMPLES_KEY = 'transformed_examples'
 
 RAW_EXAMPLE_KEY = 'raw_example'
 
@@ -65,6 +78,13 @@ _DEFAULT_TRANSFORMED_EXAMPLES_PREFIX = 'transformed_examples'
 # Temporary path inside transform_output used for tft.beam
 # TODO(b/125451545): Provide a safe temp path from base executor instead.
 _TEMP_DIR_IN_TRANSFORM_OUTPUT = '.temp_path'
+
+# TODO(zhuo): Remove this branch after 0.22.
+if tft.__version__ < '0.22':
+  _create_batched_placeholders = (
+      impl_helper.feature_spec_as_batched_placeholders)
+else:
+  _create_batched_placeholders = impl_helper.batched_placeholders_from_specs
 
 
 # TODO(b/122478841): Move it to a common place that is shared across components.
@@ -105,7 +125,9 @@ class _Dataset(object):
   # might not be as self-describing).
   _FILE_PATTERN_SUFFIX_LENGTH = 6
 
-  def __init__(self, file_pattern: Text, file_format: Text, data_format: Text,
+  def __init__(self, file_pattern: Text,
+               file_format: Union[Text, int],
+               data_format: Union[Text, int],
                metadata: dataset_metadata.DatasetMetadata,
                stats_output_path: Optional[Text] = None,
                materialize_output_path: Optional[Text] = None):
@@ -122,13 +144,21 @@ class _Dataset(object):
     self._file_pattern = file_pattern
     file_pattern_suffix = os.path.join(
         *file_pattern.split(os.sep)[-self._FILE_PATTERN_SUFFIX_LENGTH:])
-    self._dataset_key = analyzer_cache.make_dataset_key(file_pattern_suffix)
+    self._dataset_key = analyzer_cache.make_dataset_key(
+        # TODO(b/143087691): Remove this replace once TFT 0.16 is released.
+        file_pattern_suffix).replace('\\', '-')
     self._file_format = file_format
     self._data_format = data_format
     self._metadata = metadata
     self._stats_output_path = stats_output_path
     self._materialize_output_path = materialize_output_path
     self._index = None
+    self._serialized = None
+    self._decoded = None
+    self._standardized = None
+    self._transformed = None
+    self._transformed_and_encoded = None
+    self._transformed_and_standardized = None
 
   @property
   def file_pattern(self):
@@ -171,26 +201,32 @@ class _Dataset(object):
 
   @property
   def serialized(self):
+    assert self._serialized is not None
     return self._serialized
 
   @property
   def decoded(self):
+    assert self._decoded is not None
     return self._decoded
 
   @property
   def standardized(self):
+    assert self._standardized is not None
     return self._standardized
 
   @property
   def transformed(self):
+    assert self._transformed is not None
     return self._transformed
 
   @property
   def transformed_and_encoded(self):
+    assert self._transformed_and_encoded is not None
     return self._transformed_and_encoded
 
   @property
   def transformed_and_standardized(self):
+    assert self._transformed_and_standardized is not None
     return self._transformed_and_standardized
 
   @index.setter
@@ -256,10 +292,10 @@ class Executor(base_executor.BaseExecutor):
 
     Args:
       input_dict: Input dict from input key to a list of artifacts, including:
-        - input_data: A list of 'ExamplesPath' type which should contain two
-          splits 'train' and 'eval'.
-        - schema: A list of 'SchemaPath' type which should contain a single
-          schema artifact.
+        - input_data: A list of type `standard_artifacts.Examples` which
+          should contain two splits 'train' and 'eval'.
+        - schema: A list of type `standard_artifacts.Schema` which should
+          contain a single schema artifact.
       output_dict: Output dict from key to a list of artifacts, including:
         - transform_output: Output of 'tf.Transform', which includes an exported
           Tensorflow graph suitable for both training and serving;
@@ -275,18 +311,18 @@ class Executor(base_executor.BaseExecutor):
       None
     """
     self._log_startup(input_dict, output_dict, exec_properties)
-    train_data_uri = artifact_utils.get_split_uri(input_dict['input_data'],
+    train_data_uri = artifact_utils.get_split_uri(input_dict[EXAMPLES_KEY],
                                                   'train')
-    eval_data_uri = artifact_utils.get_split_uri(input_dict['input_data'],
+    eval_data_uri = artifact_utils.get_split_uri(input_dict[EXAMPLES_KEY],
                                                  'eval')
     schema_file = io_utils.get_only_uri_in_dir(
-        artifact_utils.get_single_uri(input_dict['schema']))
+        artifact_utils.get_single_uri(input_dict[SCHEMA_KEY]))
     transform_output = artifact_utils.get_single_uri(
-        output_dict['transform_output'])
+        output_dict[TRANSFORM_GRAPH_KEY])
     transformed_train_output = artifact_utils.get_split_uri(
-        output_dict['transformed_examples'], 'train')
+        output_dict[TRANSFORMED_EXAMPLES_KEY], 'train')
     transformed_eval_output = artifact_utils.get_split_uri(
-        output_dict['transformed_examples'], 'eval')
+        output_dict[TRANSFORMED_EXAMPLES_KEY], 'eval')
     temp_path = os.path.join(transform_output, _TEMP_DIR_IN_TRANSFORM_OUTPUT)
     absl.logging.debug('Using temp path %s for tft.beam', temp_path)
 
@@ -389,9 +425,7 @@ class Executor(base_executor.BaseExecutor):
     Returns:
       A PCollection containing KV pairs of bytes.
     """
-    if dataset.file_format != labels.FORMAT_TFRECORD:
-      raise ValueError('Unsupported input file format: {}'.format(
-          dataset.file_format))
+    assert dataset.file_format == labels.FORMAT_TFRECORD, dataset.file_format
 
     # TODO(b/139538871): Implement telemetry, on top of pa.Table once available.
     return (
@@ -424,7 +458,7 @@ class Executor(base_executor.BaseExecutor):
     # TODO(b/139538871): Implement telemetry, on top of pa.Table once available.
     return (
         pcoll
-        | 'DropKeys' >> beam.Values()
+        | 'Values' >> beam.Values()
         | 'Write' >> beam.io.WriteToTFRecord(
             transformed_example_path,
             file_name_suffix='.gz',
@@ -474,6 +508,7 @@ class Executor(base_executor.BaseExecutor):
       pcoll: beam.pvalue.PCollection,
       stats_output_path: Text,
       schema: schema_pb2.Schema,
+      stats_options: tfdv.StatsOptions,
       # TODO(b/115684207): Remove this and all related code.
       use_tfdv=True,
       # TODO(b/115684207): Remove this and all related code.
@@ -485,6 +520,8 @@ class Executor(base_executor.BaseExecutor):
       pcoll: PCollection of examples.
       stats_output_path: path where statistics is written to.
       schema: schema.
+      stats_options: An instance of `tfdv.StatsOptions()` used when computing
+        statistics.
       use_tfdv: whether use TFDV for computing statistics.
       examples_are_serialized: Unused.
 
@@ -494,11 +531,11 @@ class Executor(base_executor.BaseExecutor):
     assert use_tfdv
     del examples_are_serialized  # Unused
 
+    stats_options.schema = schema
     # pylint: disable=no-value-for-parameter
     return (
         pcoll
-        | 'GenerateStatistics' >> tfdv.GenerateStatistics(
-            tfdv.StatsOptions(schema=schema))
+        | 'GenerateStatistics' >> tfdv.GenerateStatistics(stats_options)
         | 'WriteStats' >> Executor._WriteStats(stats_output_path))
 
   # TODO(zhuo): Obviate this once TFXIO is used.
@@ -541,7 +578,7 @@ class Executor(base_executor.BaseExecutor):
         tft_beam.Context.get_desired_batch_size())
     return (
         pcoll
-        | 'DropKeys' >> beam.Values()
+        | 'Values' >> beam.Values()
         | 'BatchElements' >> beam.BatchElements(**kwargs)
         | 'ToArrowTables' >> beam.ParDo(Executor._ToArrowTablesFn(schema)))
 
@@ -554,50 +591,15 @@ class Executor(base_executor.BaseExecutor):
       schema: schema_pb2.Schema) -> beam.pvalue.PCollection:
     """Converts Dicts to Arrow Tables."""
 
-    def ToLegacyTFDVExamples(
-        element: Dict[Text, Any], feature_specs: Dict[Text, Any]):
-      """Encodes element in a (legacy) in-memory format that TFDV expects."""
-      if _TRANSFORM_INTERNAL_FEATURE_FOR_KEY not in element:
-        raise ValueError(
-            'Expected _TRANSFORM_INTERNAL_FEATURE_FOR_KEY ({}) to exist in the '
-            'input but not found.'.format(_TRANSFORM_INTERNAL_FEATURE_FOR_KEY))
-
-      # TODO(b/123549935): Obviate the numpy array conversions by
-      # allowing TFDV to accept primitives in general, and TFT's
-      # input/output format in particular.
-      result = {}
-      for feature_name, feature_spec in feature_specs.items():
-        feature_value = element.get(feature_name)
-        if feature_value is None:
-          result[feature_name] = None
-        elif isinstance(feature_value, np.ndarray):
-          result[feature_name] = np.asarray(
-              feature_value, feature_spec.dtype.as_numpy_dtype).reshape(-1)
-        elif isinstance(feature_value, list):
-          result[feature_name] = np.asarray(
-              feature_value, feature_spec.dtype.as_numpy_dtype)
-        else:
-          result[feature_name] = np.asarray(
-              [feature_value], dtype=feature_spec.dtype.as_numpy_dtype)
-      return result
-
-    feature_specs_from_schema = schema_utils.schema_as_feature_spec(
-        schema).feature_spec
-
     # TODO(pachristopher): Remove encoding and batching steps once TFT
     # supports Arrow tables.
-    #
-    # TODO(pachristopher): Explore if encoding TFT dict into serialized examples
-    # and then converting them to Arrow tables is cheaper than converting to
-    # TFDV dict and then to Arrow tables.
     return (
         pcoll
-        | 'ToLegacyTFDVExamples'
-        >> beam.Map(
-            ToLegacyTFDVExamples, feature_specs=feature_specs_from_schema)
-        | 'BatchExamplesToArrowTables'
-        >> tfdv.utils.batch_util.BatchExamplesToArrowTables(
-            tft_beam.Context.get_desired_batch_size()))
+        | 'ToSerializedTFExamples'
+        >> beam.ParDo(Executor._EncodeAsExamples(serialized=True), schema
+                     ).with_output_types(Tuple[Optional[bytes], bytes])
+        | 'FromSerializedToArrowTables'
+        >> Executor._FromSerializedToArrowTables(schema=schema))  # pylint: disable=no-value-for-parameter
 
   @staticmethod
   @beam.ptransform_fn
@@ -656,22 +658,23 @@ class Executor(base_executor.BaseExecutor):
 
   # TODO(katsiapis): Understand why 'Optional' is needed for the key of the
   # output type.
-  @beam.typehints.with_input_types(Dict[Text, Any], metadata=Any)
-  @beam.typehints.with_output_types(Tuple[Optional[bytes], tf.train.Example])
+  @beam.typehints.with_input_types(Dict[Text, Any], schema=schema_pb2.Schema)
+  @beam.typehints.with_output_types(Tuple[Optional[bytes],
+                                          Union[bytes, tf.train.Example]])
   class _EncodeAsExamples(beam.DoFn):
     """Encodes data as tf.Examples based on the given metadata."""
 
-    __slots__ = ['_coder']
+    __slots__ = ['_serialized', '_coder']
 
-    def __init__(self):
+    def __init__(self, serialized):
+      self._serialized = serialized  # pylint: disable=assigning-non-slot
       self._coder = None  # pylint: disable=assigning-non-slot
 
-    def process(self, element: Dict[Text, Any],
-                metadata: Any) -> Generator[Tuple[Any, Any], None, None]:
+    def process(self, element: Dict[Text, Any], schema: schema_pb2.Schema
+               ) -> Generator[Tuple[Any, Any], None, None]:
       if self._coder is None:
         self._coder = tft.coders.ExampleProtoCoder(  # pylint: disable=assigning-non-slot
-            metadata.schema,
-            serialized=False)
+            schema, serialized=self._serialized)
 
       # Make sure that the synthetic key feature doesn't get encoded.
       assert _TRANSFORM_INTERNAL_FEATURE_FOR_KEY in element
@@ -1042,18 +1045,16 @@ class Executor(base_executor.BaseExecutor):
               pipeline
               | 'ReadDataset[{}]'.format(infix) >> self._ReadExamples(dataset))
 
-          # TODO(b/37788560): This is only needed for the TFT datasets that
-          # aren't cached.
-          dataset.decoded = (
-              dataset.serialized
-              | 'Decode[{}]'.format(infix)
-              >> self._DecodeInputs(analyze_decode_fn))
-
         input_analysis_data = {}
         for key, dataset in new_analyze_data_dict.items():
           if dataset is None:
             input_analysis_data[key] = None
           else:
+            infix = 'AnalysisIndex{}'.format(dataset.index)
+            dataset.decoded = (
+                dataset.serialized
+                | 'Decode[{}]'.format(infix) >>
+                self._DecodeInputs(analyze_decode_fn))
             input_analysis_data[key] = dataset.decoded
 
         if flat_data_required:
@@ -1084,7 +1085,6 @@ class Executor(base_executor.BaseExecutor):
          >> tft_beam.WriteTransformFn(transform_output_path))
 
         if output_cache_dir is not None and cache_output is not None:
-          # TODO(b/37788560): Possibly make this part of the beam graph.
           tf.io.gfile.makedirs(output_cache_dir)
           absl.logging.debug('Using existing cache in: %s', input_cache_dir)
           if input_cache_dir is not None:
@@ -1098,18 +1098,12 @@ class Executor(base_executor.BaseExecutor):
                 self._CopyCache(full_span_cache_dir,
                                 os.path.join(output_cache_dir, span_cache_dir))
 
-          # TODO(b/138934800): Use dataset_keys directly once TFT 0.15 is
-          # released.
-          write_analysis_cache_kwargs = dict(
-              pipeline=pipeline,
-              cache_base_dir=output_cache_dir,
-              sink=self._GetCacheSink())
-          if tft.__version__ > '0.14.0':
-            write_analysis_cache_kwargs['dataset_keys'] = (
-                full_analyze_dataset_keys_list)
           (cache_output
-           | 'WriteCache' >>
-           analyzer_cache.WriteAnalysisCacheToFS(**write_analysis_cache_kwargs))
+           | 'WriteCache' >> analyzer_cache.WriteAnalysisCacheToFS(
+               pipeline=pipeline,
+               cache_base_dir=output_cache_dir,
+               sink=self._GetCacheSink(),
+               dataset_keys=full_analyze_dataset_keys_list))
 
         if compute_statistics or materialize_output_paths:
           # Do not compute pre-transform stats if the input format is raw proto,
@@ -1132,6 +1126,8 @@ class Executor(base_executor.BaseExecutor):
                     | 'FromSerializedToArrowTables[{}]'.format(infix)
                     >> self._FromSerializedToArrowTables(schema_proto))
 
+            pre_transform_stats_options = (
+                transform_stats_options.get_pre_transform_stats_options())
             ([
                 dataset.standardized if stats_use_tfdv else dataset.serialized
                 for dataset in analyze_data_list
@@ -1141,6 +1137,7 @@ class Executor(base_executor.BaseExecutor):
              self._GenerateStats(
                  pre_transform_feature_stats_path,
                  schema_proto,
+                 stats_options=pre_transform_stats_options,
                  use_tfdv=stats_use_tfdv,
                  examples_are_serialized=True))
 
@@ -1169,7 +1166,8 @@ class Executor(base_executor.BaseExecutor):
               dataset.transformed_and_encoded = (
                   dataset.transformed
                   | 'Encode[{}]'.format(infix)
-                  >> beam.ParDo(self._EncodeAsExamples(), metadata))
+                  >> beam.ParDo(self._EncodeAsExamples(serialized=False),
+                                _GetSchemaProto(metadata)))
 
           if compute_statistics:
             # Aggregated feature stats after transformation.
@@ -1192,6 +1190,8 @@ class Executor(base_executor.BaseExecutor):
                 transform_output_path,
                 tft.TFTransformOutput.POST_TRANSFORM_FEATURE_STATS_PATH)
 
+            post_transform_stats_options = (
+                transform_stats_options.get_post_transform_stats_options())
             ([(dataset.transformed_and_standardized
                if stats_use_tfdv else dataset.transformed_and_encoded)
               for dataset in transform_data_list]
@@ -1200,6 +1200,7 @@ class Executor(base_executor.BaseExecutor):
              self._GenerateStats(
                  post_transform_feature_stats_path,
                  transformed_schema_proto,
+                 stats_options=post_transform_stats_options,
                  use_tfdv=stats_use_tfdv))
 
             if per_set_stats_output_paths:
@@ -1215,6 +1216,7 @@ class Executor(base_executor.BaseExecutor):
                 data | 'GenerateStats[{}]'.format(infix) >> self._GenerateStats(
                     dataset.stats_output_path,
                     transformed_schema_proto,
+                    stats_options=post_transform_stats_options,
                     use_tfdv=stats_use_tfdv)
 
           if materialize_output_paths:
@@ -1250,7 +1252,7 @@ class Executor(base_executor.BaseExecutor):
     with tf.compat.v1.Graph().as_default() as graph:
       with tf.compat.v1.Session(graph=graph) as sess:
 
-        input_signature = impl_helper.feature_spec_as_batched_placeholders(
+        input_signature = _create_batched_placeholders(
             schema_utils.schema_as_feature_spec(
                 _GetSchemaProto(metadata)).feature_spec)
 
@@ -1297,8 +1299,8 @@ class Executor(base_executor.BaseExecutor):
   # TODO(b/114444977): Remove the unused can_process_jointly argument.
   def _MakeDatasetList(
       self,
-      file_patterns: Sequence[Text],
-      file_formats: Sequence[Text],
+      file_patterns: Sequence[Union[Text, int]],
+      file_formats: Sequence[Union[Text, int]],
       data_format: Text,
       metadata: dataset_metadata.DatasetMetadata,
       can_process_jointly: bool,
@@ -1341,8 +1343,7 @@ class Executor(base_executor.BaseExecutor):
       dataset.index = index
     return result
 
-  @staticmethod
-  def _ShouldDecodeAsRawExample(data_format: Text) -> bool:
+  def _ShouldDecodeAsRawExample(self, data_format: Union[Text, int]) -> bool:
     """Returns true if data format should be decoded as raw example.
 
     Args:
@@ -1351,11 +1352,11 @@ class Executor(base_executor.BaseExecutor):
     Returns:
       True if data format should be decoded as raw example.
     """
-    return (Executor._IsDataFormatSequenceExample(data_format) or
-            Executor._IsDataFormatProto(data_format))
+    return (self._IsDataFormatSequenceExample(data_format) or
+            self._IsDataFormatProto(data_format))
 
   @staticmethod
-  def _IsDataFormatSequenceExample(data_format: Text) -> bool:
+  def _IsDataFormatSequenceExample(data_format: Union[Text, int]) -> bool:
     """Returns true if data format is sequence example.
 
     Args:
@@ -1364,10 +1365,11 @@ class Executor(base_executor.BaseExecutor):
     Returns:
       True if data format is sequence example.
     """
+    assert not isinstance(data_format, int), data_format
     return data_format == labels.FORMAT_TF_SEQUENCE_EXAMPLE
 
   @staticmethod
-  def _IsDataFormatProto(data_format: Text) -> bool:
+  def _IsDataFormatProto(data_format: Union[Text, int]) -> bool:
     """Returns true if data format is protocol buffer.
 
     Args:
@@ -1376,9 +1378,11 @@ class Executor(base_executor.BaseExecutor):
     Returns:
       True if data format is protocol buffer.
     """
+    assert not isinstance(data_format, int), data_format
     return data_format == labels.FORMAT_PROTO
 
-  def _GetDesiredBatchSize(self, data_format: Text) -> Optional[int]:
+  def _GetDesiredBatchSize(
+      self, data_format: Union[Text, int]) -> Optional[int]:
     """Returns batch size.
 
     Args:
@@ -1391,7 +1395,7 @@ class Executor(base_executor.BaseExecutor):
       return 1
     return None
 
-  def _GetDecodeFunction(self, data_format: Text,
+  def _GetDecodeFunction(self, data_format: Union[Text, int],
                          schema: dataset_schema.Schema) -> Any:
     """Returns the decode function for `data_format`.
 

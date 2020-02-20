@@ -18,13 +18,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import json
 import os
 import tensorflow as tf
 from google.protobuf import json_format
 from tfx.components.testdata.module_file import trainer_module
 from tfx.components.trainer import executor
 from tfx.proto import trainer_pb2
+from tfx.types import artifact_utils
 from tfx.types import standard_artifacts
+from tfx.utils import io_utils
 
 
 class ExecutorTest(tf.test.TestCase):
@@ -38,36 +41,41 @@ class ExecutorTest(tf.test.TestCase):
         self._testMethodName)
 
     # Create input dict.
-    train_examples = standard_artifacts.Examples(split='train')
-    train_examples.uri = os.path.join(self._source_data_dir,
-                                      'transform/transformed_examples/train/')
-    eval_examples = standard_artifacts.Examples(split='eval')
-    eval_examples.uri = os.path.join(self._source_data_dir,
-                                     'transform/transformed_examples/eval/')
+    examples = standard_artifacts.Examples()
+    examples.uri = os.path.join(self._source_data_dir,
+                                'transform/transformed_examples')
+    examples.split_names = artifact_utils.encode_split_names(['train', 'eval'])
     transform_output = standard_artifacts.TransformGraph()
     transform_output.uri = os.path.join(self._source_data_dir,
-                                        'transform/transform_output/')
-    schema = standard_artifacts.Examples()
-    schema.uri = os.path.join(self._source_data_dir, 'schema_gen/')
+                                        'transform/transform_output')
+    schema = standard_artifacts.Schema()
+    schema.uri = os.path.join(self._source_data_dir, 'schema_gen')
+    previous_model = standard_artifacts.Model()
+    previous_model.uri = os.path.join(self._source_data_dir, 'trainer/previous')
 
     self._input_dict = {
-        'examples': [train_examples, eval_examples],
-        'transform_output': [transform_output],
-        'schema': [schema],
+        executor.EXAMPLES_KEY: [examples],
+        executor.TRANSFORM_GRAPH_KEY: [transform_output],
+        executor.SCHEMA_KEY: [schema],
+        executor.BASE_MODEL_KEY: [previous_model]
     }
 
     # Create output dict.
     self._model_exports = standard_artifacts.Model()
     self._model_exports.uri = os.path.join(self._output_data_dir,
                                            'model_export_path')
-    self._output_dict = {'output': [self._model_exports]}
+    self._output_dict = {executor.OUTPUT_MODEL_KEY: [self._model_exports]}
 
     # Create exec properties skeleton.
     self._exec_properties = {
         'train_args':
-            json_format.MessageToJson(trainer_pb2.TrainArgs(num_steps=1000)),
+            json_format.MessageToJson(
+                trainer_pb2.TrainArgs(num_steps=1000),
+                preserving_proto_field_name=True),
         'eval_args':
-            json_format.MessageToJson(trainer_pb2.EvalArgs(num_steps=500)),
+            json_format.MessageToJson(
+                trainer_pb2.EvalArgs(num_steps=500),
+                preserving_proto_field_name=True),
         'warm_starting':
             False,
     }
@@ -87,6 +95,26 @@ class ExecutorTest(tf.test.TestCase):
     self.assertTrue(
         tf.io.gfile.exists(
             os.path.join(self._model_exports.uri, 'serving_model_dir')))
+
+  def _verify_model_exports_only_one_file(self):
+    self.assertEqual(
+        1,
+        len(
+            tf.io.gfile.listdir(
+                os.path.join(self._model_exports.uri, 'eval_model_dir'))))
+    self.assertEqual(
+        1,
+        len(
+            tf.io.gfile.listdir(
+                os.path.join(self._model_exports.uri, 'serving_model_dir'))))
+
+  def testGenericExecutor(self):
+    self._exec_properties['module_file'] = self._module_file
+    executor.GenericExecutor().Do(
+        input_dict=self._input_dict,
+        output_dict=self._output_dict,
+        exec_properties=self._exec_properties)
+    self._verify_model_exports()
 
   def testDoWithModuleFile(self):
     self._exec_properties['module_file'] = self._module_file
@@ -119,6 +147,28 @@ class ExecutorTest(tf.test.TestCase):
           input_dict=self._input_dict,
           output_dict=self._output_dict,
           exec_properties=self._exec_properties)
+
+  def testDoWithHyperParameters(self):
+    hp_artifact = standard_artifacts.HyperParameters()
+    hp_artifact.uri = os.path.join(self._output_data_dir, 'hyperparameters/')
+
+    # TODO(jyzhao): use real kerastuner.HyperParameters instead of dict.
+    hyperparameters = {}
+    hyperparameters['first_dnn_layer_size'] = 100
+    hyperparameters['num_dnn_layers'] = 4
+    hyperparameters['dnn_decay_factor'] = 0.7
+    io_utils.write_string_file(
+        os.path.join(hp_artifact.uri, 'hyperparameters.txt'),
+        json.dumps(hyperparameters))
+
+    self._input_dict[executor.HYPERPARAMETERS_KEY] = [hp_artifact]
+
+    self._exec_properties['module_file'] = self._module_file
+    self._trainer_executor.Do(
+        input_dict=self._input_dict,
+        output_dict=self._output_dict,
+        exec_properties=self._exec_properties)
+    self._verify_model_exports()
 
 
 if __name__ == '__main__':

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Helper class to start TFX training jobs on CMLE."""
+"""Helper class to start TFX training jobs on AI Platform."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -26,7 +26,10 @@ from tfx.components.base import base_executor
 from tfx.components.trainer import executor as tfx_trainer_executor
 from tfx.extensions.google_cloud_ai_platform import runner
 
-_POLLING_INTERVAL_IN_SECONDS = 30
+
+# Keys to the items in custom_config passed as a part of exec_properties.
+TRAINING_ARGS_KEY = 'ai_platform_training_args'
+JOB_ID_KEY = 'ai_platform_training_job_id'
 
 
 class Executor(base_executor.BaseExecutor):
@@ -41,10 +44,10 @@ class Executor(base_executor.BaseExecutor):
       input_dict: Passthrough input dict for tfx.components.Trainer.executor.
       output_dict: Passthrough input dict for tfx.components.Trainer.executor.
       exec_properties: Mostly a passthrough input dict for
-        tfx.components.Trainer.executor.
-        custom_config.ai_platform_training_args is consumed by this class.  For
-        the full set of parameters supported by Google Cloud AI Platform, refer
-        to
+        tfx.components.Trainer.executor. custom_config.ai_platform_training_args
+        and custom_config.ai_platform_training_job_id are consumed by this
+        class.  For the full set of parameters supported by Google Cloud AI
+        Platform, refer to
         https://cloud.google.com/ml-engine/docs/tensorflow/training-jobs#configuring_the_job
 
     Returns:
@@ -56,15 +59,16 @@ class Executor(base_executor.BaseExecutor):
     """
     self._log_startup(input_dict, output_dict, exec_properties)
 
-    if not exec_properties.get('custom_config',
-                               {}).get('ai_platform_training_args'):
-      err_msg = '\'ai_platform_training_args\' not found in custom_config.'
+    custom_config = exec_properties.get('custom_config', {})
+    training_inputs = custom_config.get(TRAINING_ARGS_KEY)
+    if training_inputs is None:
+      err_msg = '\'%s\' not found in custom_config.' % TRAINING_ARGS_KEY
       absl.logging.error(err_msg)
       raise ValueError(err_msg)
 
-    training_inputs = exec_properties.get('custom_config',
-                                          {}).pop('ai_platform_training_args')
+    job_id = custom_config.get(JOB_ID_KEY)
     executor_class_path = '%s.%s' % (tfx_trainer_executor.Executor.__module__,
                                      tfx_trainer_executor.Executor.__name__)
-    return runner.start_cmle_training(input_dict, output_dict, exec_properties,
-                                      executor_class_path, training_inputs)
+    return runner.start_aip_training(input_dict, output_dict, exec_properties,
+                                     executor_class_path, training_inputs,
+                                     job_id)

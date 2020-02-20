@@ -30,7 +30,7 @@ from tfx.types import standard_artifacts
 
 class ResolverNodeTest(tf.test.TestCase):
 
-  def testImporterDefinition(self):
+  def testResolverDefinition(self):
     channel_to_resolve = types.Channel(type=standard_artifacts.Examples)
     rnode = resolver_node.ResolverNode(
         instance_name='my_resolver',
@@ -55,10 +55,12 @@ class ResolverDriverTest(tf.test.TestCase):
     super(ResolverDriverTest, self).setUp()
     self.connection_config = metadata_store_pb2.ConnectionConfig()
     self.connection_config.sqlite.SetInParent()
-    self.component_info = data_types.ComponentInfo(
-        component_type='c_type', component_id='c_id')
     self.pipeline_info = data_types.PipelineInfo(
         pipeline_name='p_name', pipeline_root='p_root', run_id='run_id')
+    self.component_info = data_types.ComponentInfo(
+        component_type='c_type',
+        component_id='c_id',
+        pipeline_info=self.pipeline_info)
     self.driver_args = data_types.DriverArgs(enable_cache=True)
     self.source_channel_key = 'source_channel'
     self.source_channels = {
@@ -69,7 +71,14 @@ class ResolverDriverTest(tf.test.TestCase):
     existing_artifact = standard_artifacts.Examples()
     existing_artifact.uri = 'my/uri'
     with metadata.Metadata(connection_config=self.connection_config) as m:
+      contexts = m.register_pipeline_contexts_if_not_exists(self.pipeline_info)
       m.publish_artifacts([existing_artifact])
+      m.register_execution(
+          pipeline_info=self.pipeline_info,
+          component_info=self.component_info,
+          input_artifacts={'a': [existing_artifact]},
+          exec_properties={},
+          contexts=contexts)
       driver = resolver_node.ResolverDriver(metadata_handler=m)
       execution_result = driver.pre_execution(
           component_info=self.component_info,
@@ -97,18 +106,17 @@ class ResolverDriverTest(tf.test.TestCase):
   def testResolveArtifactFailIncompleteResult(self):
     with metadata.Metadata(connection_config=self.connection_config) as m:
       driver = resolver_node.ResolverDriver(metadata_handler=m)
-      with self.assertRaises(RuntimeError):
-        driver.pre_execution(
-            component_info=self.component_info,
-            pipeline_info=self.pipeline_info,
-            driver_args=self.driver_args,
-            input_dict=self.source_channels,
-            output_dict=self.source_channels.copy(),
-            exec_properties={
-                resolver_node.RESOLVER_CLASS:
-                    latest_artifacts_resolver.LatestArtifactsResolver,
-                resolver_node.RESOLVER_CONFIGS: {}
-            })
+      driver.pre_execution(
+          component_info=self.component_info,
+          pipeline_info=self.pipeline_info,
+          driver_args=self.driver_args,
+          input_dict=self.source_channels,
+          output_dict=self.source_channels.copy(),
+          exec_properties={
+              resolver_node.RESOLVER_CLASS:
+                  latest_artifacts_resolver.LatestArtifactsResolver,
+              resolver_node.RESOLVER_CONFIGS: {}
+          })
 
 
 if __name__ == '__main__':

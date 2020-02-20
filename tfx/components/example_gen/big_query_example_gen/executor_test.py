@@ -28,6 +28,7 @@ from google.cloud import bigquery
 from google.protobuf import json_format
 from tfx.components.example_gen.big_query_example_gen import executor
 from tfx.proto import example_gen_pb2
+from tfx.types import artifact_utils
 from tfx.types import standard_artifacts
 
 
@@ -63,6 +64,7 @@ class ExecutorTest(tf.test.TestCase):
         bigquery.SchemaField('f', 'FLOAT', mode='REQUIRED'),
         bigquery.SchemaField('s', 'STRING', mode='REQUIRED'),
     ]
+    super(ExecutorTest, self).setUp()
 
   @mock.patch.multiple(
       executor,
@@ -104,11 +106,10 @@ class ExecutorTest(tf.test.TestCase):
         self._testMethodName)
 
     # Create output dict.
-    train_examples = standard_artifacts.Examples(split='train')
-    train_examples.uri = os.path.join(output_data_dir, 'train')
-    eval_examples = standard_artifacts.Examples(split='eval')
-    eval_examples.uri = os.path.join(output_data_dir, 'eval')
-    output_dict = {'examples': [train_examples, eval_examples]}
+    examples = standard_artifacts.Examples()
+    examples.uri = output_data_dir
+    examples.split_names = artifact_utils.encode_split_names(['train', 'eval'])
+    output_dict = {'examples': [examples]}
 
     # Create exe properties.
     exec_properties = {
@@ -117,7 +118,8 @@ class ExecutorTest(tf.test.TestCase):
                 example_gen_pb2.Input(splits=[
                     example_gen_pb2.Input.Split(
                         name='bq', pattern='SELECT i, f, s FROM `fake`'),
-                ])),
+                ]),
+                preserving_proto_field_name=True),
         'output_config':
             json_format.MessageToJson(
                 example_gen_pb2.Output(
@@ -126,7 +128,8 @@ class ExecutorTest(tf.test.TestCase):
                             name='train', hash_buckets=2),
                         example_gen_pb2.SplitConfig.Split(
                             name='eval', hash_buckets=1)
-                    ])))
+                    ])),
+                preserving_proto_field_name=True)
     }
 
     # Run executor.
@@ -134,9 +137,9 @@ class ExecutorTest(tf.test.TestCase):
     big_query_example_gen.Do({}, output_dict, exec_properties)
 
     # Check BigQuery example gen outputs.
-    train_output_file = os.path.join(train_examples.uri,
+    train_output_file = os.path.join(examples.uri, 'train',
                                      'data_tfrecord-00000-of-00001.gz')
-    eval_output_file = os.path.join(eval_examples.uri,
+    eval_output_file = os.path.join(examples.uri, 'eval',
                                     'data_tfrecord-00000-of-00001.gz')
     self.assertTrue(tf.io.gfile.exists(train_output_file))
     self.assertTrue(tf.io.gfile.exists(eval_output_file))

@@ -33,6 +33,13 @@ from tfx.components.base import base_executor
 from tfx.types import artifact_utils
 from tfx.utils import io_utils
 
+
+# Key for examples in executor input_dict.
+EXAMPLES_KEY = 'examples'
+
+# Key for output statistics in executor output_dict.
+STATISTICS_KEY = 'statistics'
+
 # Default file name for stats generated.
 _DEFAULT_FILE_NAME = 'stats_tfrecord'
 
@@ -55,11 +62,11 @@ class Executor(base_executor.BaseExecutor):
 
     Args:
       input_dict: Input dict from input key to a list of Artifacts.
-        - input_data: A list of 'ExamplesPath' type. This should contain both
-          'train' and 'eval' split.
+        - input_data: A list of type `standard_artifacts.Examples`. This should
+          contain both 'train' and 'eval' split.
       output_dict: Output dict from output key to a list of Artifacts.
-        - output: A list of 'ExampleStatisticsPath' type. This should contain
-          both 'train' and 'eval' split.
+        - output: A list of type `standard_artifacts.ExampleStatistics`. This
+          should contain both the 'train' and 'eval' splits.
       exec_properties: A dict of execution properties. Not used yet.
 
     Returns:
@@ -67,14 +74,19 @@ class Executor(base_executor.BaseExecutor):
     """
     self._log_startup(input_dict, output_dict, exec_properties)
 
-    split_to_instance = {x.split: x for x in input_dict['input_data']}
+    split_uris = []
+    for artifact in input_dict[EXAMPLES_KEY]:
+      for split in artifact_utils.decode_split_names(artifact.split_names):
+        uri = os.path.join(artifact.uri, split)
+        split_uris.append((split, uri))
     with self._make_beam_pipeline() as p:
       # TODO(b/126263006): Support more stats_options through config.
       stats_options = options.StatsOptions()
-      for split, instance in split_to_instance.items():
+      for split, uri in split_uris:
         absl.logging.info('Generating statistics for split {}'.format(split))
-        input_uri = io_utils.all_files_pattern(instance.uri)
-        output_uri = artifact_utils.get_split_uri(output_dict['output'], split)
+        input_uri = io_utils.all_files_pattern(uri)
+        output_uri = artifact_utils.get_split_uri(output_dict[STATISTICS_KEY],
+                                                  split)
         output_path = os.path.join(output_uri, _DEFAULT_FILE_NAME)
         _ = (
             p

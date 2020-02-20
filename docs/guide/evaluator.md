@@ -5,7 +5,7 @@ results for your models, to help you understand how your model performs on
 subsets of your data.
 
 *   Consumes: EvalSavedModel from [Trainer](trainer.md)
-*   Emits: Analysis results to [TensorFlow Metadata](mlmd.md)
+*   Emits: Analysis results to [ML Metadata](mlmd.md)
 
 ## Evaluator and TensorFlow Model Analysis
 
@@ -33,7 +33,7 @@ taxi_eval_spec = [
 model_analyzer = components.Evaluator(
       examples=examples_gen.outputs['examples'],
       feature_slicing_spec=taxi_eval_spec,
-      model_exports=trainer.outputs['model'],
+      model=trainer.outputs['model'],
       fairness_indicator_thresholds = [0.25, 0.5, 0.75]
       )
 ```

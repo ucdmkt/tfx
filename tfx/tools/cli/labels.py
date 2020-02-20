@@ -34,6 +34,8 @@ PIPELINE_COMPONENTS = 'pipeline_components'
 PIPELINE_PACKAGE_PATH = 'pipeline_package_path'
 # Target container image path.
 TARGET_IMAGE = 'build_target_image'
+# Base container image path.
+BASE_IMAGE = 'build_base_image'
 # Skaffold command
 SKAFFOLD_CMD = 'skaffold_cmd'
 # Client ID for IAP protected endpoint.
@@ -48,3 +50,9 @@ PIPELINE_ID = 'pipeline_id'
 EXPERIMENT_ID = 'experiment_id'
 # Environment variable for the default Kubeflow TFX image.
 KUBEFLOW_TFX_IMAGE_ENV = 'KUBEFLOW_TFX_IMAGE'
+
+# Template specific labels.
+# Destination directory path to copy files
+DESTINATION_PATH = 'destination_path'
+# Model kind of the copying template
+MODEL = 'model'

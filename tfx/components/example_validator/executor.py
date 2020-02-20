@@ -31,6 +31,15 @@ from tfx.components.util import value_utils
 from tfx.types import artifact_utils
 from tfx.utils import io_utils
 
+
+# Key for statistics in executor input_dict.
+STATISTICS_KEY = 'statistics'
+# Key for schema in executor input_dict.
+SCHEMA_KEY = 'schema'
+
+# Key for anomalies in executor output_dict.
+ANOMALIES_KEY = 'anomalies'
+
 # Default file name for anomalies output.
 DEFAULT_FILE_NAME = 'anomalies.pbtxt'
 
@@ -47,10 +56,10 @@ class Executor(base_executor.BaseExecutor):
 
     Args:
       input_dict: Input dict from input key to a list of artifacts, including:
-        - stats: A list of 'ExampleStatisticsPath' type which should contain
-          split 'eval'. Stats on other splits are ignored.
-        - schema: A list of 'SchemaPath' type which should contain a single
-          schema artifact.
+        - stats: A list of type `standard_artifacts.ExampleStatistics` which
+          should contain the 'eval' split. Stats on other splits are ignored.
+        - schema: A list of type `standard_artifacts.Schema` which should
+          contain a single schema artifact.
       output_dict: Output dict from key to a list of artifacts, including:
         - output: A list of 'ExampleValidationPath' artifact of size one. It
           will include a single pbtxt file which contains all anomalies found.
@@ -66,13 +75,14 @@ class Executor(base_executor.BaseExecutor):
         labels.STATS:
             tfdv.load_statistics(
                 io_utils.get_only_uri_in_dir(
-                    artifact_utils.get_split_uri(input_dict['stats'], 'eval'))),
+                    artifact_utils.get_split_uri(input_dict[STATISTICS_KEY],
+                                                 'eval'))),
         labels.SCHEMA:
             io_utils.SchemaReader().read(
                 io_utils.get_only_uri_in_dir(
-                    artifact_utils.get_single_uri(input_dict['schema'])))
+                    artifact_utils.get_single_uri(input_dict[SCHEMA_KEY])))
     }
-    output_uri = artifact_utils.get_single_uri(output_dict['output'])
+    output_uri = artifact_utils.get_single_uri(output_dict[ANOMALIES_KEY])
     label_outputs = {labels.SCHEMA_DIFF_PATH: output_uri}
     self._Validate(label_inputs, label_outputs)
     absl.logging.info(

@@ -41,7 +41,7 @@ class ExecutorTest(tf.test.TestCase):
     tf.io.gfile.makedirs(self._output_data_dir)
     self._model_export = standard_artifacts.Model()
     self._model_export.uri = os.path.join(self._source_data_dir,
-                                          'trainer/current/')
+                                          'trainer/current')
     self._model_blessing = standard_artifacts.ModelBlessing()
     self._input_dict = {
         'model_export': [self._model_export],
@@ -77,13 +77,28 @@ class ExecutorTest(tf.test.TestCase):
         return_value='gs://test_model_path',
         autospec=True).start()
 
+  def testPipelineRoot(self):
+    self.mock_path_utils.return_value = '/none_gcs_pipeline_root'
+    with self.assertRaises(ValueError):
+      self._executor.Do(self._input_dict, self._output_dict,
+                        self._exec_properties)
+
+  def testBigQueryServingArgs(self):
+    temp_exec_properties = {
+        'custom_config': {},
+        'push_destination': None,
+    }
+    with self.assertRaises(ValueError):
+      self._executor.Do(self._input_dict, self._output_dict,
+                        temp_exec_properties)
+
   def testDoBlessed(self):
     self.mock_check_blessing.return_value = True
     self._executor.Do(self._input_dict, self._output_dict,
                       self._exec_properties)
     self.mock_bq.assert_called_once()
     self.assertEqual(
-        1, self._model_push.artifact.custom_properties['pushed'].int_value)
+        1, self._model_push.mlmd_artifact.custom_properties['pushed'].int_value)
 
   def testDoNotBlessed(self):
     self.mock_check_blessing.return_value = False

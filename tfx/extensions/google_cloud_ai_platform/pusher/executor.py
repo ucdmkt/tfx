@@ -12,40 +12,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Custom executor to push TFX model to CMLE serving."""
+"""Custom executor to push TFX model to AI Platform."""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import os
-import tempfile
 from typing import Any, Dict, List, Text
 
-import absl
-import tensorflow as tf
-
-from google.protobuf import json_format
 from tfx import types
 from tfx.components.pusher import executor as tfx_pusher_executor
 from tfx.extensions.google_cloud_ai_platform import runner
-from tfx.proto import pusher_pb2
 from tfx.types import artifact_utils
 from tfx.utils import path_utils
 
 
-_POLLING_INTERVAL_IN_SECONDS = 30
+# Keys to the items in custom_config passed as a part of exec_properties.
+SERVING_ARGS_KEY = 'ai_platform_serving_args'
 
 
 class Executor(tfx_pusher_executor.Executor):
   """Deploy a model to Google Cloud AI Platform serving."""
-
-  def _make_local_temp_destination(self) -> Text:
-    """Make a temp destination to push the model."""
-    temp_dir = tempfile.mkdtemp()
-    push_destination = pusher_pb2.PushDestination(
-        filesystem=pusher_pb2.PushDestination.Filesystem(
-            base_directory=temp_dir))
-    return json_format.MessageToJson(push_destination)
 
   def Do(self, input_dict: Dict[Text, List[types.Artifact]],
          output_dict: Dict[Text, List[types.Artifact]],
@@ -68,41 +55,41 @@ class Executor(tfx_pusher_executor.Executor):
     Returns:
       None
     Raises:
-      ValueError: if ai_platform_serving_args is not in
-      exec_properties.custom_config.
+      ValueError:
+        If ai_platform_serving_args is not in exec_properties.custom_config.
+        If Serving model path does not start with gs://.
       RuntimeError: if the Google Cloud AI Platform training job failed.
     """
     self._log_startup(input_dict, output_dict, exec_properties)
-    if not self.CheckBlessing(input_dict, output_dict):
+    model_push = artifact_utils.get_single_instance(
+        output_dict[tfx_pusher_executor.PUSHED_MODEL_KEY])
+    if not self.CheckBlessing(input_dict):
+      model_push.set_int_custom_property('pushed', 0)
       return
 
     model_export = artifact_utils.get_single_instance(
-        input_dict['model_export'])
+        input_dict[tfx_pusher_executor.MODEL_KEY])
     model_export_uri = model_export.uri
-    model_blessing_uri = artifact_utils.get_single_uri(
-        input_dict['model_blessing'])
-    model_push = artifact_utils.get_single_instance(output_dict['model_push'])
-    # TODO(jyzhao): should this be in driver or executor.
-    if not tf.io.gfile.exists(os.path.join(model_blessing_uri, 'BLESSED')):
-      model_push.set_int_custom_property('pushed', 0)
-      absl.logging.info('Model on %s was not blessed', model_blessing_uri)
-      return
 
     exec_properties_copy = exec_properties.copy()
     custom_config = exec_properties_copy.pop('custom_config', {})
-    ai_platform_serving_args = custom_config['ai_platform_serving_args']
-
+    ai_platform_serving_args = custom_config[SERVING_ARGS_KEY]
+    if not ai_platform_serving_args:
+      raise ValueError(
+          '\'ai_platform_serving_args\' is missing in \'custom_config\'')
     # Deploy the model.
     model_path = path_utils.serving_model_path(model_export_uri)
     # Note: we do not have a logical model version right now. This
     # model_version is a timestamp mapped to trainer's exporter.
     model_version = os.path.basename(model_path)
-    if ai_platform_serving_args is not None:
-      runner.deploy_model_for_cmle_serving(model_path, model_version,
-                                           ai_platform_serving_args)
+    executor_class_path = '%s.%s' % (self.__class__.__module__,
+                                     self.__class__.__name__)
+    runner.deploy_model_for_aip_prediction(
+        model_path,
+        model_version,
+        ai_platform_serving_args,
+        executor_class_path,
+    )
 
-    # Make sure artifacts are populated in a standard way by calling
-    # tfx.pusher.executor.Executor.Do().
-    exec_properties_copy['push_destination'] = exec_properties.get(
-        'push_destination') or self._make_local_temp_destination()
-    super(Executor, self).Do(input_dict, output_dict, exec_properties_copy)
+    model_push.set_int_custom_property('pushed', 1)
+    model_push.set_string_custom_property('pushed_model', model_path)

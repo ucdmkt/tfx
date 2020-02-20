@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Text
 
 import absl
 import apache_beam as beam
+import tensorflow as tf
 import tensorflow_model_analysis as tfma
 
 from google.protobuf import json_format
@@ -31,6 +32,16 @@ from tfx.proto import evaluator_pb2
 from tfx.types import artifact_utils
 from tfx.utils import io_utils
 from tfx.utils import path_utils
+
+# Key for examples in executor input_dict.
+EXAMPLES_KEY = 'examples'
+# Key for model in executor input_dict.
+MODEL_KEY = 'model'
+# Key for baseline model in executor input_dict.
+BASELINE_MODEL_KEY = 'baseline_model'
+
+# Key for anomalies in executor output_dict.
+EVALUATION_KEY = 'evaluation'
 
 
 class Executor(base_executor.BaseExecutor):
@@ -69,34 +80,33 @@ class Executor(base_executor.BaseExecutor):
       output_dict: Output dict from output key to a list of Artifacts.
         - output: model evaluation results.
       exec_properties: A dict of execution properties.
+        - eval_config: JSON string of tfma.EvalConfig.
         - feature_slicing_spec: JSON string of evaluator_pb2.FeatureSlicingSpec
-          instance, providing the way to slice the data.
+          instance, providing the way to slice the data. Deprecated, use
+          eval_config.slicing_specs instead.
 
     Returns:
       None
     """
-    if 'model_exports' not in input_dict:
-      raise ValueError('\'model_exports\' is missing in input dict.')
-    if 'examples' not in input_dict:
-      raise ValueError('\'examples\' is missing in input dict.')
-    if 'output' not in output_dict:
-      raise ValueError('\'output\' is missing in output dict.')
+    if EXAMPLES_KEY not in input_dict:
+      raise ValueError('EXAMPLES_KEY is missing from input dict.')
+    if MODEL_KEY not in input_dict:
+      raise ValueError('MODEL_KEY is missing from input dict.')
+    if EVALUATION_KEY not in output_dict:
+      raise ValueError('EVALUATION_KEY is missing from output dict.')
+    if len(input_dict[MODEL_KEY]) > 1:
+      raise ValueError(
+          'There can be only one candidate model, there are {}.'.format(
+              len(input_dict[MODEL_KEY])))
+    if BASELINE_MODEL_KEY in input_dict and len(
+        input_dict[BASELINE_MODEL_KEY]) > 1:
+      raise ValueError(
+          'There can be only one baseline model, there are {}.'.format(
+              len(input_dict[BASELINE_MODEL_KEY])))
 
     self._log_startup(input_dict, output_dict, exec_properties)
 
-    # Extract input artifacts
-    model_exports_uri = artifact_utils.get_single_uri(
-        input_dict['model_exports'])
-
-    feature_slicing_spec = evaluator_pb2.FeatureSlicingSpec()
-    json_format.Parse(exec_properties['feature_slicing_spec'],
-                      feature_slicing_spec)
-    slice_spec = self._get_slice_spec_from_feature_slicing_spec(
-        feature_slicing_spec)
-
-    output_uri = artifact_utils.get_single_uri(output_dict['output'])
-
-    eval_model_path = path_utils.eval_model_path(model_exports_uri)
+    output_uri = artifact_utils.get_single_uri(output_dict[EVALUATION_KEY])
 
     # Add fairness indicator metric callback if necessary.
     fairness_indicator_thresholds = exec_properties.get(
@@ -111,10 +121,60 @@ class Executor(base_executor.BaseExecutor):
               thresholds=fairness_indicator_thresholds),
       ]
 
-    absl.logging.info('Using {} for model eval.'.format(eval_model_path))
-    eval_shared_model = tfma.default_eval_shared_model(
-        eval_saved_model_path=eval_model_path,
-        add_metrics_callbacks=add_metrics_callbacks)
+    def _get_eval_saved_model(artifact: List[types.Artifact],
+                              tags=None) -> tfma.EvalSharedModel:
+      model_uri = artifact_utils.get_single_uri(artifact)
+      if tags and tf.saved_model.SERVING in tags:
+        model_path = path_utils.serving_model_path(model_uri)
+      else:
+        model_path = path_utils.eval_model_path(model_uri)
+      return tfma.default_eval_shared_model(
+          eval_saved_model_path=model_path,
+          tags=tags,
+          add_metrics_callbacks=add_metrics_callbacks)
+
+    # Extract model artifacts.
+    # Baseline will be ignored if baseline is not configured in model_spec.
+    if 'eval_config' in exec_properties and exec_properties['eval_config']:
+      slice_spec = None
+      eval_config = tfma.EvalConfig()
+      json_format.Parse(exec_properties['eval_config'], eval_config)
+      if len(eval_config.model_specs) > 2:
+        raise ValueError(
+            """Cannot support more than two models. There are {} models in this
+             eval_config.""".format(len(eval_config.model_specs)))
+      models = {}
+      if not eval_config.model_specs:
+        eval_config.model_specs.add()
+      for model_spec in eval_config.model_specs:
+        if model_spec.signature_name != 'eval':
+          tags = [tf.saved_model.SERVING]
+        if model_spec.is_baseline:
+          if BASELINE_MODEL_KEY not in input_dict:
+            raise ValueError(
+                """No baseline model is present in Evaluator, check whether a
+                 baseline is provided to the Executor.""")
+          models[model_spec.name] = _get_eval_saved_model(
+              input_dict[BASELINE_MODEL_KEY], tags)
+          absl.logging.info('Using {} as baseline model.'.format(
+              models[model_spec.name].model_path))
+        else:
+          models[model_spec.name] = _get_eval_saved_model(
+              input_dict[MODEL_KEY], tags)
+          absl.logging.info('Using {} for model eval.'.format(
+              models[model_spec.name].model_path))
+    else:
+      eval_config = None
+      assert ('feature_slicing_spec' in exec_properties and
+              exec_properties['feature_slicing_spec']
+             ), 'both eval_config and feature_slicing_spec are unset.'
+      feature_slicing_spec = evaluator_pb2.FeatureSlicingSpec()
+      json_format.Parse(exec_properties['feature_slicing_spec'],
+                        feature_slicing_spec)
+      slice_spec = self._get_slice_spec_from_feature_slicing_spec(
+          feature_slicing_spec)
+      models = _get_eval_saved_model(input_dict[MODEL_KEY])
+      absl.logging.info('Using {} for model eval.'.format(models.model_path))
 
     absl.logging.info('Evaluating model.')
     with self._make_beam_pipeline() as pipeline:
@@ -122,11 +182,12 @@ class Executor(base_executor.BaseExecutor):
       (pipeline
        | 'ReadData' >> beam.io.ReadFromTFRecord(
            file_pattern=io_utils.all_files_pattern(
-               artifact_utils.get_split_uri(input_dict['examples'], 'eval')))
+               artifact_utils.get_split_uri(input_dict[EXAMPLES_KEY], 'eval')))
        |
        'ExtractEvaluateAndWriteResults' >> tfma.ExtractEvaluateAndWriteResults(
-           eval_shared_model=eval_shared_model,
-           slice_spec=slice_spec,
-           output_path=output_uri))
+           eval_shared_model=models,
+           eval_config=eval_config,
+           output_path=output_uri,
+           slice_spec=slice_spec))
     absl.logging.info(
         'Evaluation complete. Results written to {}.'.format(output_uri))

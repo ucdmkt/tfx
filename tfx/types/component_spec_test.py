@@ -20,15 +20,33 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import json
-
+from typing import Dict, List, Text
 # Standard Imports
 
 import tensorflow as tf
 from tfx.proto import example_gen_pb2
+from tfx.types.artifact import Artifact
 from tfx.types.channel import Channel
 from tfx.types.component_spec import ChannelParameter
 from tfx.types.component_spec import ComponentSpec
 from tfx.types.component_spec import ExecutionParameter
+from tfx.types.standard_artifacts import Examples
+
+
+class _InputArtifact(Artifact):
+  TYPE_NAME = 'InputArtifact'
+
+
+class _OutputArtifact(Artifact):
+  TYPE_NAME = 'OutputArtifact'
+
+
+class _X(Artifact):
+  TYPE_NAME = 'X'
+
+
+class _Z(Artifact):
+  TYPE_NAME = 'Z'
 
 
 class _BasicComponentSpec(ComponentSpec):
@@ -38,10 +56,10 @@ class _BasicComponentSpec(ComponentSpec):
       'proto': ExecutionParameter(type=example_gen_pb2.Input, optional=True),
   }
   INPUTS = {
-      'input': ChannelParameter(type_name='InputType'),
+      'input': ChannelParameter(type=_InputArtifact),
   }
   OUTPUTS = {
-      'output': ChannelParameter(type_name='OutputType'),
+      'output': ChannelParameter(type=_OutputArtifact),
   }
   _INPUT_COMPATIBILITY_ALIASES = {
       'future_input_name': 'input',
@@ -69,8 +87,8 @@ class ComponentSpecTest(tf.test.TestCase):
         example_gen_pb2.Input.Split(name='name2', pattern='pattern2'),
         example_gen_pb2.Input.Split(name='name3', pattern='pattern3'),
     ])
-    input_channel = Channel(type_name='InputType')
-    output_channel = Channel(type_name='OutputType')
+    input_channel = Channel(type=_InputArtifact)
+    output_channel = Channel(type=_OutputArtifact)
     spec = _BasicComponentSpec(
         folds=10, proto=proto, input=input_channel, output=output_channel)
     # Verify proto property.
@@ -101,15 +119,15 @@ class ComponentSpecTest(tf.test.TestCase):
 
     with self.assertRaisesRegexp(
         TypeError,
-        '.*should be a Channel of .*InputType.*got (.|\\s)*WrongType.*'):
+        '.*should be a Channel of .*InputArtifact.*got (.|\\s)*Examples.*'):
       spec = _BasicComponentSpec(
-          folds=10, input=Channel(type_name='WrongType'), output=output_channel)
+          folds=10, input=Channel(type=Examples), output=output_channel)
 
     with self.assertRaisesRegexp(
         TypeError,
-        '.*should be a Channel of .*OutputType.*got (.|\\s)*WrongType.*'):
+        '.*should be a Channel of .*OutputArtifact.*got (.|\\s)*Examples.*'):
       spec = _BasicComponentSpec(
-          folds=10, input=input_channel, output=Channel(type_name='WrongType'))
+          folds=10, input=input_channel, output=Channel(type=Examples))
 
   def testInvalidComponentspecMissingProperties(self):
 
@@ -183,7 +201,7 @@ class ComponentSpecTest(tf.test.TestCase):
       _ = WrongTypeComponentSpecA()
 
     class WrongTypeComponentSpecB(ComponentSpec):
-      PARAMETERS = {'x': ChannelParameter(type_name='X')}
+      PARAMETERS = {'x': ChannelParameter(type=_X)}
       INPUTS = {}
       OUTPUTS = {}
 
@@ -213,7 +231,7 @@ class ComponentSpecTest(tf.test.TestCase):
 
     class DuplicatePropertyComponentSpec(ComponentSpec):
       PARAMETERS = {'x': ExecutionParameter(type=int)}
-      INPUTS = {'x': ChannelParameter(type_name='X')}
+      INPUTS = {'x': ChannelParameter(type=_X)}
       OUTPUTS = {}
 
     with self.assertRaisesRegexp(ValueError, 'has a duplicate argument'):
@@ -226,17 +244,44 @@ class ComponentSpecTest(tf.test.TestCase):
           'x': ExecutionParameter(type=int),
           'y': ExecutionParameter(type=int, optional=True),
       }
-      INPUTS = {'z': ChannelParameter(type_name='Z')}
+      INPUTS = {'z': ChannelParameter(type=_Z)}
       OUTPUTS = {}
 
     with self.assertRaisesRegexp(ValueError, 'Missing argument'):
       _ = SimpleComponentSpec(x=10)
 
     with self.assertRaisesRegexp(ValueError, 'Missing argument'):
-      _ = SimpleComponentSpec(z=Channel(type_name='Z'))
+      _ = SimpleComponentSpec(z=Channel(type=_Z))
 
     # Okay since y is optional.
-    _ = SimpleComponentSpec(x=10, z=Channel(type_name='Z'))
+    _ = SimpleComponentSpec(x=10, z=Channel(type=_Z))
+
+  def testExecutionParameterTypeCheck(self):
+    int_parameter = ExecutionParameter(type=int)
+    int_parameter.type_check('int_parameter', 8)
+    with self.assertRaisesRegexp(TypeError, "Expected type <(class|type) 'int'>"
+                                 " for parameter u?'int_parameter'"):
+      int_parameter.type_check('int_parameter', 'string')
+
+    list_parameter = ExecutionParameter(type=List[int])
+    list_parameter.type_check('list_parameter', [])
+    list_parameter.type_check('list_parameter', [42])
+    with self.assertRaisesRegexp(TypeError, 'Expecting a list for parameter'):
+      list_parameter.type_check('list_parameter', 42)
+
+    with self.assertRaisesRegexp(TypeError, "Expecting item type <(class|type) "
+                                 "'int'> for parameter u?'list_parameter'"):
+      list_parameter.type_check('list_parameter', [42, 'wrong item'])
+
+    dict_parameter = ExecutionParameter(type=Dict[Text, int])
+    dict_parameter.type_check('dict_parameter', {})
+    dict_parameter.type_check('dict_parameter', {'key1': 1, 'key2': 2})
+    with self.assertRaisesRegexp(TypeError, 'Expecting a dict for parameter'):
+      dict_parameter.type_check('dict_parameter', 'simple string')
+
+    with self.assertRaisesRegexp(TypeError, "Expecting value type "
+                                 "<(class|type) 'int'>"):
+      dict_parameter.type_check('dict_parameter', {'key1': '1'})
 
 
 if __name__ == '__main__':

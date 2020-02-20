@@ -20,18 +20,19 @@ from __future__ import print_function
 
 import json
 import os
+
+import absl
 from kfp import dsl
 import tensorflow as tf
 
 from ml_metadata.proto import metadata_store_pb2
 from tfx.components.example_gen.csv_example_gen import component as csv_example_gen_component
 from tfx.components.statistics_gen import component as statistics_gen_component
+from tfx.orchestration import data_types
 from tfx.orchestration import pipeline as tfx_pipeline
-from tfx.orchestration.experimental.runtime_parameter import runtime_string_parameter
 from tfx.orchestration.kubeflow import base_component
 from tfx.orchestration.kubeflow.proto import kubeflow_pb2
 from tfx.orchestration.launcher import in_process_component_launcher
-from tfx.proto import example_gen_pb2
 from tfx.types import channel_utils
 from tfx.types import standard_artifacts
 
@@ -90,8 +91,8 @@ class BaseComponentTest(tf.test.TestCase):
         '{{pipelineparam:op=;name=pipeline-root-param}}',
         '--kubeflow_metadata_config',
         '{\n'
-        '  "mysqlDbServiceHost": {\n'
-        '    "environmentVariable": "MYSQL_SERVICE_HOST"\n'
+        '  "mysql_db_service_host": {\n'
+        '    "environment_variable": "MYSQL_SERVICE_HOST"\n'
         '  }\n'
         '}',
         '--beam_pipeline_args',
@@ -105,18 +106,25 @@ class BaseComponentTest(tf.test.TestCase):
         '--component_config',
         'null',
     ]
-    self.assertEqual(self.component.container_op.arguments[:len(expected_args)],
-                     expected_args)
+    try:
+      self.assertEqual(
+          self.component.container_op.arguments[:len(expected_args)],
+          expected_args)
+    except AssertionError:
+      # Print out full arguments for debugging.
+      absl.logging.error('==== BEGIN CONTAINER OP ARGUMENT DUMP ====')
+      absl.logging.error(
+          json.dumps(self.component.container_op.arguments, indent=2))
+      absl.logging.error('==== END CONTAINER OP ARGUMENT DUMP ====')
+      raise
 
   def testContainerOpName(self):
-    self.assertEqual('StatisticsGen.foo',
-                     self.tfx_component.id)
-    self.assertEqual('StatisticsGen_foo',
-                     self.component.container_op.name)
+    self.assertEqual('StatisticsGen.foo', self.tfx_component.id)
+    self.assertEqual('StatisticsGen_foo', self.component.container_op.name)
 
 
 class BaseComponentWithPipelineParamTest(tf.test.TestCase):
-  """Test the usage of RuntimeStringParameter."""
+  """Test the usage of RuntimeParameter."""
   maxDiff = None  # pylint: disable=invalid-name
   _test_pipeline_name = 'test_pipeline'
 
@@ -124,17 +132,20 @@ class BaseComponentWithPipelineParamTest(tf.test.TestCase):
     super(BaseComponentWithPipelineParamTest, self).setUp()
 
     test_pipeline_root = dsl.PipelineParam(name='pipeline-root-param')
-    example_gen_output_name = runtime_string_parameter.RuntimeStringParameter(
-        name='example-gen-output-name', default='default-to-be-discarded')
+    example_gen_buckets = data_types.RuntimeParameter(
+        name='example-gen-buckets', ptype=int, default=10)
 
     examples = standard_artifacts.ExternalArtifact()
     example_gen = csv_example_gen_component.CsvExampleGen(
         input=channel_utils.as_channel([examples]),
-        output_config=example_gen_pb2.Output(
-            split_config=example_gen_pb2.SplitConfig(splits=[
-                example_gen_pb2.SplitConfig.Split(
-                    name=example_gen_output_name, hash_buckets=10)
-            ])))
+        output_config={
+            'split_config': {
+                'splits': [{
+                    'name': 'examples',
+                    'hash_buckets': example_gen_buckets
+                }]
+            }
+        })
     statistics_gen = statistics_gen_component.StatisticsGen(
         examples=example_gen.outputs['examples'], instance_name='foo')
 
@@ -195,8 +206,8 @@ class BaseComponentWithPipelineParamTest(tf.test.TestCase):
         '{{pipelineparam:op=;name=pipeline-root-param}}',
         '--kubeflow_metadata_config',
         '{\n'
-        '  "mysqlDbServiceHost": {\n'
-        '    "environmentVariable": "MYSQL_SERVICE_HOST"\n'
+        '  "mysql_db_service_host": {\n'
+        '    "environment_variable": "MYSQL_SERVICE_HOST"\n'
         '  }\n'
         '}',
         '--beam_pipeline_args',
@@ -217,8 +228,8 @@ class BaseComponentWithPipelineParamTest(tf.test.TestCase):
         '{{pipelineparam:op=;name=pipeline-root-param}}',
         '--kubeflow_metadata_config',
         '{\n'
-        '  "mysqlDbServiceHost": {\n'
-        '    "environmentVariable": "MYSQL_SERVICE_HOST"\n'
+        '  "mysql_db_service_host": {\n'
+        '    "environment_variable": "MYSQL_SERVICE_HOST"\n'
         '  }\n'
         '}',
         '--beam_pipeline_args',
@@ -232,14 +243,29 @@ class BaseComponentWithPipelineParamTest(tf.test.TestCase):
         '--component_config',
         'null',
     ]
-    self.assertEqual(
-        self.statistics_gen.container_op
-        .arguments[:len(statistics_gen_expected_args)],
-        statistics_gen_expected_args)
-
-    self.assertEqual(
-        self.example_gen.container_op.
-        arguments[:len(example_gen_expected_args)], example_gen_expected_args)
+    try:
+      self.assertEqual(
+          self.statistics_gen.container_op
+          .arguments[:len(statistics_gen_expected_args)],
+          statistics_gen_expected_args)
+      self.assertEqual(
+          self.example_gen.container_op.arguments[:len(example_gen_expected_args
+                                                      )],
+          example_gen_expected_args)
+    except AssertionError:
+      # Print out full arguments for debugging.
+      absl.logging.error(
+          '==== BEGIN STATISTICSGEN CONTAINER OP ARGUMENT DUMP ====')
+      absl.logging.error(
+          json.dumps(self.statistics_gen.container_op.arguments, indent=2))
+      absl.logging.error(
+          '==== END STATISTICSGEN CONTAINER OP ARGUMENT DUMP ====')
+      absl.logging.error(
+          '==== BEGIN EXAMPLEGEN CONTAINER OP ARGUMENT DUMP ====')
+      absl.logging.error(
+          json.dumps(self.example_gen.container_op.arguments, indent=2))
+      absl.logging.error('==== END EXAMPLEGEN CONTAINER OP ARGUMENT DUMP ====')
+      raise
 
   def testContainerOpName(self):
     self.assertEqual('StatisticsGen.foo', self.tfx_statistics_gen.id)

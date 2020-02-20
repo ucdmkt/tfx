@@ -18,7 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Optional, Text
+from typing import Any, Dict, Optional, Text, Union
 
 from tfx import types
 from tfx.components.base import base_component
@@ -42,7 +42,7 @@ class BulkInferrer(base_component.BaseComponent):
     # Uses BulkInferrer to inference on examples.
     bulk_inferrer = BulkInferrer(
         examples=example_gen.outputs['examples'],
-        model=trainer.outputs['output'])
+        model=trainer.outputs['model'])
   ```
   """
 
@@ -53,25 +53,31 @@ class BulkInferrer(base_component.BaseComponent):
                examples: types.Channel = None,
                model: Optional[types.Channel] = None,
                model_blessing: Optional[types.Channel] = None,
-               data_spec: Optional[bulk_inferrer_pb2.DataSpec] = None,
-               model_spec: Optional[bulk_inferrer_pb2.ModelSpec] = None,
+               data_spec: Optional[Union[bulk_inferrer_pb2.DataSpec,
+                                         Dict[Text, Any]]] = None,
+               model_spec: Optional[Union[bulk_inferrer_pb2.ModelSpec,
+                                          Dict[Text, Any]]] = None,
                inference_result: Optional[types.Channel] = None,
                instance_name: Optional[Text] = None):
     """Construct an BulkInferrer component.
 
     Args:
-      examples: A Channel of 'ExamplesPath' type, usually produced by ExampleGen
-        component. _required_
-      model: A Channel of 'ModelExportPath' type, usually produced by
-        Trainer component.
-      model_blessing: A Channel of 'ModelBlessingPath' type, usually produced by
-        Model Validator component.
+      examples: A Channel of type `standard_artifacts.Examples`, usually
+        produced by an ExampleGen component. _required_
+      model: A Channel of type `standard_artifacts.Model`, usually produced by
+        a Trainer component.
+      model_blessing: A Channel of type `standard_artifacts.ModelBlessing`,
+        usually produced by a ModelValidator component.
       data_spec: bulk_inferrer_pb2.DataSpec instance that describes data
-        selection.
+        selection. If any field is provided as a RuntimeParameter, data_spec
+        should be constructed as a dict with the same field names as DataSpec
+        proto message.
       model_spec: bulk_inferrer_pb2.ModelSpec instance that describes model
-        specification.
-      inference_result: Channel of `InferenceResult` to store the inference
-        results.
+        specification. If any field is provided as a RuntimeParameter,
+        model_spec should be constructed as a dict with the same field names as
+        ModelSpec proto message.
+      inference_result: Channel of type `standard_artifacts.InferenceResult`
+        to store the inference results.
       instance_name: Optional name assigned to this specific instance of
         BulkInferrer. Required only if multiple BulkInferrer components are
         declared in the same pipeline.

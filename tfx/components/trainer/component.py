@@ -17,24 +17,26 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Any, Dict, Optional, Text
+from typing import Any, Dict, Optional, Text, Union
+
+import absl
 
 from tfx import types
 from tfx.components.base import base_component
 from tfx.components.base import executor_spec
-from tfx.components.trainer import driver
 from tfx.components.trainer import executor
+from tfx.orchestration import data_types
 from tfx.proto import trainer_pb2
 from tfx.types import standard_artifacts
 from tfx.types.standard_component_specs import TrainerSpec
 
 
+# TODO(b/147702778): update when switch generic executor as default.
 class Trainer(base_component.BaseComponent):
   """A TFX component to train a TensorFlow model.
 
   The Trainer component is used to train and eval a model using given inputs and
-  a user-supplied estimator.  This component includes a custom driver to
-  optionally grab previous model to warm start from.
+  a user-supplied estimator.
 
   ## Providing an estimator
   The TFX executor will use the estimator provided in the `module_file` file
@@ -98,7 +100,6 @@ class Trainer(base_component.BaseComponent):
 
   SPEC_CLASS = TrainerSpec
   EXECUTOR_SPEC = executor_spec.ExecutorClassSpec(executor.Executor)
-  DRIVER_CLASS = driver.Driver
 
   def __init__(
       self,
@@ -106,10 +107,14 @@ class Trainer(base_component.BaseComponent):
       transformed_examples: Optional[types.Channel] = None,
       transform_graph: Optional[types.Channel] = None,
       schema: types.Channel = None,
-      module_file: Optional[Text] = None,
-      trainer_fn: Optional[Text] = None,
-      train_args: trainer_pb2.TrainArgs = None,
-      eval_args: trainer_pb2.EvalArgs = None,
+      base_model: Optional[types.Channel] = None,
+      hyperparameters: Optional[types.Channel] = None,
+      module_file: Optional[Union[Text, data_types.RuntimeParameter]] = None,
+      run_fn: Optional[Union[Text, data_types.RuntimeParameter]] = None,
+      # TODO(b/147702778): deprecate trainer_fn.
+      trainer_fn: Optional[Union[Text, data_types.RuntimeParameter]] = None,
+      train_args: Union[trainer_pb2.TrainArgs, Dict[Text, Any]] = None,
+      eval_args: Union[trainer_pb2.EvalArgs, Dict[Text, Any]] = None,
       custom_config: Optional[Dict[Text, Any]] = None,
       custom_executor_spec: Optional[executor_spec.ExecutorSpec] = None,
       output: Optional[types.Channel] = None,
@@ -118,19 +123,28 @@ class Trainer(base_component.BaseComponent):
     """Construct a Trainer component.
 
     Args:
-      examples: A Channel of 'ExamplesPath' type, serving as the source of
-        examples that are used in training (required). May be raw or
+      examples: A Channel of type `standard_artifacts.Examples`, serving as
+        the source of examples used in training (required). May be raw or
         transformed.
       transformed_examples: Deprecated field. Please set 'examples' instead.
-      transform_graph: An optional Channel of 'TransformPath' type, serving as
-        the input transform graph if present.
-      schema:  A Channel of 'SchemaPath' type, serving as the schema of training
-        and eval data.
+      transform_graph: An optional Channel of type
+        `standard_artifacts.TransformGraph`, serving as the input transform
+        graph if present.
+      schema:  A Channel of type `standard_artifacts.Schema`, serving as the
+        schema of training and eval data.
+      base_model: A Channel of type `Model`, containing model that will be used
+        for training. This can be used for warmstart, transfer learning or
+        model ensembling.
+      hyperparameters: A Channel of type `standard_artifacts.HyperParameters`,
+        serving as the hyperparameters for training module. Tuner's output best
+        hyperparameters can be feed into this.
       module_file: A path to python module file containing UDF model definition.
-        The module_file must implement a function named `trainer_fn` at its
-        top level. The function must have the following signature.
 
-        def trainer_fn(tf.contrib.training.HParams,
+        For default executor, The module_file must implement a function named
+        `trainer_fn` at its top level. The function must have the following
+        signature.
+
+        def trainer_fn(trainer.executor.TrainerFnArgs,
                        tensorflow_metadata.proto.v0.schema_pb2) -> Dict:
           ...
 
@@ -138,22 +152,28 @@ class Trainer(base_component.BaseComponent):
           'estimator': an instance of tf.estimator.Estimator
           'train_spec': an instance of tf.estimator.TrainSpec
           'eval_spec': an instance of tf.estimator.EvalSpec
-          'eval_input_receiver_fn': an instance of tfma.export.EvalInputReceiver
+          'eval_input_receiver_fn': an instance of
+            tfma.export.EvalInputReceiver. Exactly one of 'module_file' or
+            'trainer_fn' must be supplied.
 
-        Exactly one of 'module_file' or 'trainer_fn' must be supplied.
-      trainer_fn:  A python path to UDF model definition function. See
-        'module_file' for the required signature of the UDF.
+        For generic executor, The module_file must implement a function named
+        `run_fn` at its top level with function signature:
+        `def run_fn(trainer.executor.TrainerFnArgs)`, and the trained model must
+        be saved to TrainerFnArgs.serving_model_dir when execute this function.
+      run_fn:  A python path to UDF model definition function for generic
+        trainer. See 'module_file' for details. Exactly one of 'module_file' or
+        'run_fn' must be supplied if Trainer uses GenericExecutor.
+      trainer_fn:  A python path to UDF model definition function for estimator
+        based trainer. See 'module_file' for the required signature of the UDF.
         Exactly one of 'module_file' or 'trainer_fn' must be supplied.
       train_args: A trainer_pb2.TrainArgs instance, containing args used for
         training. Current only num_steps is available.
       eval_args: A trainer_pb2.EvalArgs instance, containing args used for eval.
         Current only num_steps is available.
-      custom_config: A dict which contains the training job parameters to be
-        passed to Google Cloud ML Engine.  For the full set of parameters
-        supported by Google Cloud ML Engine, refer to
-        https://cloud.google.com/ml-engine/reference/rest/v1/projects.jobs#Job
+      custom_config: A dict which contains addtional training job parameters
+        that will be passed into user module.
       custom_executor_spec: Optional custom executor spec.
-      output: Optional 'ModelExportPath' channel for result of exported models.
+      output: Optional `Model` channel for result of exported models.
       transform_output: Backwards compatibility alias for the 'transform_graph'
         argument.
       instance_name: Optional unique instance name. Necessary iff multiple
@@ -161,21 +181,28 @@ class Trainer(base_component.BaseComponent):
 
     Raises:
       ValueError:
-        - When both or neither of 'module_file' and 'trainer_fn' is supplied.
+        - When both or neither of 'module_file' and user function
+          (e.g., trainer_fn and run_fn) is supplied.
         - When both or neither of 'examples' and 'transformed_examples'
             is supplied.
-        - When 'transformed_examples' is supplied but 'transform_output'
+        - When 'transformed_examples' is supplied but 'transform_graph'
             is not supplied.
     """
-    transform_graph = transform_graph or transform_output
-    if bool(module_file) == bool(trainer_fn):
+    if [bool(module_file), bool(run_fn), bool(trainer_fn)].count(True) != 1:
       raise ValueError(
-          "Exactly one of 'module_file' or 'trainer_fn' must be supplied")
+          "Exactly one of 'module_file', 'trainer_fn', or 'run_fn' must be supplied."
+      )
 
     if bool(examples) == bool(transformed_examples):
       raise ValueError(
           "Exactly one of 'example' or 'transformed_example' must be supplied.")
 
+    if transform_output:
+      absl.logging.warning(
+          'The "transform_output" argument to the Trainer component has '
+          'been renamed to "transform_graph" and is deprecated. Please update '
+          "your usage as support for this argument will be removed soon.")
+      transform_graph = transform_output
     if transformed_examples and not transform_graph:
       raise ValueError("If 'transformed_examples' is supplied, "
                        "'transform_graph' must be supplied too.")
@@ -184,14 +211,17 @@ class Trainer(base_component.BaseComponent):
         type=standard_artifacts.Model, artifacts=[standard_artifacts.Model()])
     spec = TrainerSpec(
         examples=examples,
-        transform_output=transform_graph,
+        transform_graph=transform_graph,
         schema=schema,
+        base_model=base_model,
+        hyperparameters=hyperparameters,
         train_args=train_args,
         eval_args=eval_args,
         module_file=module_file,
+        run_fn=run_fn,
         trainer_fn=trainer_fn,
         custom_config=custom_config,
-        output=output)
+        model=output)
     super(Trainer, self).__init__(
         spec=spec,
         custom_executor_spec=custom_executor_spec,

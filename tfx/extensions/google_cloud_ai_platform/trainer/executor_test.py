@@ -24,12 +24,14 @@ import mock
 import tensorflow as tf
 
 from tfx.components.trainer import executor as tfx_trainer_executor
-from tfx.extensions.google_cloud_ai_platform.trainer.executor import Executor
+from tfx.extensions.google_cloud_ai_platform.trainer import executor as ai_platform_trainer_executor
 
 
 class ExecutorTest(tf.test.TestCase):
 
   def setUp(self):
+    super(ExecutorTest, self).setUp()
+
     self._output_data_dir = os.path.join(
         os.environ.get('TEST_UNDECLARED_OUTPUTS_DIR', self.get_temp_dir()),
         self._testMethodName)
@@ -39,31 +41,44 @@ class ExecutorTest(tf.test.TestCase):
     self._outputs = {}
     self._exec_properties = {
         'custom_config': {
-            'ai_platform_training_args': {
+            ai_platform_trainer_executor.TRAINING_ARGS_KEY: {
                 'project': self._project_id,
                 'jobDir': self._job_dir,
             },
         },
     }
+    self._executor_class_path = '%s.%s' % (
+        tfx_trainer_executor.Executor.__module__,
+        tfx_trainer_executor.Executor.__name__)
 
   @mock.patch(
       'tfx.extensions.google_cloud_ai_platform.trainer.executor.runner'
   )
   def testDo(self, mock_runner):
-    executor = Executor()
+    executor = ai_platform_trainer_executor.Executor()
     executor.Do(self._inputs, self._outputs, self._exec_properties)
-    executor_class_path = '%s.%s' % (tfx_trainer_executor.Executor.__module__,
-                                     tfx_trainer_executor.Executor.__name__)
-    mock_runner.start_cmle_training.assert_called_with(
-        self._inputs,
-        self._outputs,
-        self._exec_properties,
-        executor_class_path,
-        {
+    mock_runner.start_aip_training.assert_called_with(
+        self._inputs, self._outputs, self._exec_properties,
+        self._executor_class_path, {
             'project': self._project_id,
             'jobDir': self._job_dir,
-        },
-    )
+        }, None)
+
+  @mock.patch(
+      'tfx.extensions.google_cloud_ai_platform.trainer.executor.runner'
+  )
+  def testDoWithJobIdOverride(self, mock_runner):
+    executor = ai_platform_trainer_executor.Executor()
+    job_id = 'overridden_job_id'
+    self._exec_properties['custom_config'][
+        ai_platform_trainer_executor.JOB_ID_KEY] = job_id
+    executor.Do(self._inputs, self._outputs, self._exec_properties)
+    mock_runner.start_aip_training.assert_called_with(
+        self._inputs, self._outputs, self._exec_properties,
+        self._executor_class_path, {
+            'project': self._project_id,
+            'jobDir': self._job_dir,
+        }, job_id)
 
 
 if __name__ == '__main__':

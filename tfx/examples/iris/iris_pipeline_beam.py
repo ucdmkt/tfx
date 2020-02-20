@@ -92,8 +92,7 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
 
   # Uses TFMA to compute a evaluation statistics over features of a model.
   model_analyzer = Evaluator(
-      examples=example_gen.outputs['examples'],
-      model_exports=trainer.outputs['model'])
+      examples=example_gen.outputs['examples'], model=trainer.outputs['model'])
 
   # Performs quality validation of a candidate model (compared to a baseline).
   model_validator = ModelValidator(
@@ -122,7 +121,7 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
 
 
 # To run this pipeline from the python CLI:
-#   $python iris_pipeline.py
+#   $python iris_pipeline_beam.py
 if __name__ == '__main__':
   absl.logging.set_verbosity(absl.logging.INFO)
   BeamDagRunner().run(
